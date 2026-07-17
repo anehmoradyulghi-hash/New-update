@@ -157,10 +157,9 @@
     <div class="nav-item" data-p="orders" onclick="go('orders')"><span class="ic">🧾</span> سفارش‌ها</div>
     <div class="nav-item" data-p="products" onclick="go('products')"><span class="ic">📦</span> محصولات</div>
     <div class="nav-item" data-p="transactions" onclick="go('transactions')"><span class="ic">💳</span> تراکنش‌ها</div>
-    <div class="nav-item" data-p="cardtopups" onclick="go('cardtopups')"><span class="ic">🏦</span> کارت به کارت<span id="cardtopup-badge" style="display:none; margin-right:auto; background:var(--danger); color:#fff; font-size:9.5px; font-weight:800; border-radius:999px; padding:1px 6px;"></span></div>
-    <div class="nav-item" data-p="market" onclick="go('market')"><span class="ic">🎁</span> بازار گیفت</div>
     <div class="nav-item" data-p="referrals" onclick="go('referrals')"><span class="ic">🤝</span> رفرال‌ها</div>
     <div class="nav-item" data-p="tasks" onclick="go('tasks')"><span class="ic">🎯</span> تسک‌ها</div>
+    <div class="nav-item" data-p="giftmarket" onclick="go('giftmarket')"><span class="ic">🎁</span> بازار گیفت</div>
     <button class="btn secondary logout-btn" onclick="logout()">خروج از حساب</button>
   </aside>
 
@@ -199,7 +198,6 @@ function enterShell(){
   document.getElementById('login-screen').style.display='none';
   document.getElementById('shell').classList.add('show');
   go('dashboard');
-  refreshCardTopupBadge();
 }
 async function api(path, opts={}){
   const res = await fetch(`${API}${path}`, {...opts, headers:{...authHeaders(), ...(opts.headers||{})}});
@@ -211,7 +209,7 @@ async function api(path, opts={}){
 function go(page){
   currentPage = page;
   document.querySelectorAll('.nav-item').forEach(n=>n.classList.toggle('active', n.dataset.p===page));
-  const renderers = {dashboard:renderDashboard, users:renderUsers, orders:renderOrders, products:renderProducts, transactions:renderTransactions, cardtopups:renderCardTopups, market:renderMarket, referrals:renderReferrals, tasks:renderTasks};
+  const renderers = {dashboard:renderDashboard, users:renderUsers, orders:renderOrders, products:renderProducts, transactions:renderTransactions, referrals:renderReferrals, tasks:renderTasks, giftmarket:renderGiftMarketAdmin};
   renderers[page]();
 }
 
@@ -464,146 +462,6 @@ async function renderTransactions(){
   `).join('') : `<tr class="empty-row"><td colspan="6">تراکنشی ثبت نشده</td></tr>`;
 }
 
-/* ===================== CARD-TO-CARD TOP-UPS ===================== */
-function cardStatusLabel(s){ return {pending:'در انتظار بررسی', approved:'تایید شده', rejected:'رد شده'}[s] || s; }
-async function refreshCardTopupBadge(){
-  try {
-    const rows = await api('/card-topups?status=pending');
-    const badge = document.getElementById('cardtopup-badge');
-    if(rows.length){ badge.textContent = rows.length; badge.style.display = 'inline-block'; }
-    else { badge.style.display = 'none'; }
-  } catch(e) {}
-}
-async function renderCardTopups(status='pending'){
-  const m = document.getElementById('main');
-  m.innerHTML = `
-    <div class="page-head"><div><h1>شارژ کارت به کارت</h1><p>بررسی و تایید درخواست‌های شارژ کیف‌پول از طریق واریز کارت‌به‌کارت</p></div></div>
-    <div class="toolbar">
-      <select id="ct-filter" onchange="renderCardTopups(this.value)">
-        <option value="pending" ${status==='pending'?'selected':''}>در انتظار بررسی</option>
-        <option value="approved" ${status==='approved'?'selected':''}>تایید شده</option>
-        <option value="rejected" ${status==='rejected'?'selected':''}>رد شده</option>
-        <option value="" ${status===''?'selected':''}>همه</option>
-      </select>
-    </div>
-    <div class="panel" style="padding:0;"><table>
-      <thead><tr><th>#</th><th>کاربر</th><th>مبلغ</th><th>کد رهگیری</th><th>۴ رقم آخر کارت</th><th>توضیح کاربر</th><th>تاریخ</th><th>وضعیت / عملیات</th></tr></thead>
-      <tbody id="ct-tbody"><tr class="empty-row"><td colspan="8">در حال بارگذاری…</td></tr></tbody>
-    </table></div>
-  `;
-  const rows = await api(`/card-topups?status=${status}`);
-  document.getElementById('ct-tbody').innerHTML = rows.length ? rows.map(c=>`
-    <tr>
-      <td class="mono">#${c.id}</td>
-      <td>${c.first_name || '—'}${c.username?' @'+c.username:''}<div style="color:var(--text-2); font-size:10px;">${c.tg_id}</div></td>
-      <td class="mono" style="color:var(--gold-1); font-weight:800;">${fmt(c.amount_rial)} ت</td>
-      <td class="mono">${c.track_code || '—'}</td>
-      <td class="mono">${c.card_last4 || '—'}</td>
-      <td>${c.note || '—'}</td>
-      <td>${c.created_at?.slice(0,16)}</td>
-      <td>
-        ${c.status==='pending' ? `
-          <div style="display:flex; gap:6px;">
-            <button class="btn small" style="background:var(--success); color:#08251a;" onclick="approveCardTopup(${c.id})">✅ تایید</button>
-            <button class="btn danger small" onclick="rejectCardTopup(${c.id})">رد</button>
-          </div>
-        ` : `<span class="pill ${c.status==='approved'?'active':'failed'}">${cardStatusLabel(c.status)}</span>`}
-      </td>
-    </tr>
-  `).join('') : `<tr class="empty-row"><td colspan="8">درخواستی یافت نشد</td></tr>`;
-}
-async function approveCardTopup(id){
-  if(!confirm('شارژ این کاربر تایید و به کیف‌پولش اضافه بشه؟')) return;
-  try {
-    await api(`/card-topups/${id}/approve`, {method:'POST'});
-    toast('✅ درخواست تایید و کیف‌پول شارژ شد');
-    renderCardTopups(document.getElementById('ct-filter')?.value || 'pending');
-    refreshCardTopupBadge();
-  } catch(e){ toast('❌ ' + e.message); }
-}
-async function rejectCardTopup(id){
-  const note = prompt('دلیل رد درخواست (اختیاری):') || '';
-  try {
-    await api(`/card-topups/${id}/reject`, {method:'POST', body:JSON.stringify({note})});
-    toast('🗑 درخواست رد شد');
-    renderCardTopups(document.getElementById('ct-filter')?.value || 'pending');
-    refreshCardTopupBadge();
-  } catch(e){ toast('❌ ' + e.message); }
-}
-
-/* ===================== MARKETPLACE (P2P GIFT) ===================== */
-function orderStatusLabel(s){ return {pending_transfer:'منتظر ارسال گیفت', completed:'تکمیل‌شده', disputed:'مورد اعتراض', refunded:'مسترد شده', cancelled:'لغو شده'}[s] || s; }
-function listingStatusLabel(s){ return {active:'فعال', reserved:'رزرو شده', sold:'فروخته شده', cancelled:'لغو شده'}[s] || s; }
-async function renderMarket(){
-  const m = document.getElementById('main');
-  m.innerHTML = `
-    <div class="page-head"><div><h1>بازار گیفت (پی‌توپی)</h1><p>آگهی‌های کاربران برای فروش گیفت پروفایل تلگرام به یکدیگر و سفارش‌های در جریان</p></div></div>
-    <div class="panel">
-      <div class="panel-title">سفارش‌ها <span style="font-weight:600; font-size:11px; color:var(--text-2);">مبلغ خریدار تا تایید دریافت گیفت نزد سیستم می‌مونه</span></div>
-      <div style="overflow-x:auto;"><table>
-        <thead><tr><th>#</th><th>گیفت</th><th>خریدار</th><th>فروشنده</th><th>مبلغ</th><th>کارمزد</th><th>وضعیت</th><th>تاریخ</th><th>عملیات</th></tr></thead>
-        <tbody id="mo-tbody"><tr class="empty-row"><td colspan="9">در حال بارگذاری…</td></tr></tbody>
-      </table></div>
-    </div>
-    <div class="panel">
-      <div class="panel-title">آگهی‌ها</div>
-      <div style="overflow-x:auto;"><table>
-        <thead><tr><th>عنوان</th><th>فروشنده</th><th>قیمت</th><th>وضعیت</th><th>تاریخ</th><th>عملیات</th></tr></thead>
-        <tbody id="ml-tbody"><tr class="empty-row"><td colspan="6">در حال بارگذاری…</td></tr></tbody>
-      </table></div>
-    </div>
-  `;
-  const [orders, listings] = await Promise.all([api('/market/orders'), api('/market/listings')]);
-
-  document.getElementById('mo-tbody').innerHTML = orders.length ? orders.map(o=>`
-    <tr>
-      <td class="mono">#${o.id}</td>
-      <td>${o.title}</td>
-      <td>${o.buyer_name || '—'}${o.buyer_username?' @'+o.buyer_username:''}</td>
-      <td>${o.seller_name || '—'}${o.seller_username?' @'+o.seller_username:''}</td>
-      <td class="mono">${fmt(o.price_rial)} ت</td>
-      <td class="mono">${fmt(o.fee_rial)} ت</td>
-      <td><span class="pill ${o.status==='completed'?'active':(o.status==='disputed'?'failed':'pending')}">${orderStatusLabel(o.status)}</span></td>
-      <td>${o.created_at?.slice(0,16)}</td>
-      <td>
-        ${['pending_transfer','disputed'].includes(o.status) ? `
-          <div style="display:flex; gap:6px;">
-            <button class="btn small" style="background:var(--success); color:#08251a;" onclick="releaseMarketOrder(${o.id})">آزادسازی برای فروشنده</button>
-            <button class="btn danger small" onclick="refundMarketOrder(${o.id})">استرداد به خریدار</button>
-          </div>` : '—'}
-      </td>
-    </tr>
-  `).join('') : `<tr class="empty-row"><td colspan="9">سفارشی ثبت نشده</td></tr>`;
-
-  document.getElementById('ml-tbody').innerHTML = listings.length ? listings.map(l=>`
-    <tr>
-      <td>${l.title}<div style="color:var(--text-2); font-size:10.5px;">${l.description || ''}</div></td>
-      <td>${l.first_name || '—'}${l.username?' @'+l.username:''}</td>
-      <td class="mono">${fmt(l.price_rial)} ت</td>
-      <td><span class="pill ${l.status==='active'?'active':(l.status==='cancelled'?'failed':'pending')}">${listingStatusLabel(l.status)}</span></td>
-      <td>${l.created_at?.slice(0,16)}</td>
-      <td>
-        ${l.status==='active' ? `<button class="btn danger small" onclick="removeListing(${l.id})">حذف آگهی</button>` : '—'}
-      </td>
-    </tr>
-  `).join('') : `<tr class="empty-row"><td colspan="6">آگهی‌ای ثبت نشده</td></tr>`;
-}
-async function releaseMarketOrder(id){
-  if(!confirm('مبلغ سفارش به کیف‌پول فروشنده واریز بشه؟')) return;
-  try { await api(`/market/orders/${id}/release`, {method:'POST'}); toast('✅ مبلغ به فروشنده آزاد شد'); renderMarket(); }
-  catch(e){ toast('❌ ' + e.message); }
-}
-async function refundMarketOrder(id){
-  if(!confirm('مبلغ سفارش به کیف‌پول خریدار برگردونده بشه؟')) return;
-  try { await api(`/market/orders/${id}/refund`, {method:'POST'}); toast('↩️ مبلغ به خریدار مسترد شد'); renderMarket(); }
-  catch(e){ toast('❌ ' + e.message); }
-}
-async function removeListing(id){
-  if(!confirm('این آگهی حذف (لغو) بشه؟')) return;
-  try { await api(`/market/listings/${id}`, {method:'PATCH', body:JSON.stringify({status:'cancelled'})}); toast('🗑 آگهی لغو شد'); renderMarket(); }
-  catch(e){ toast('❌ ' + e.message); }
-}
-
 /* ===================== REFERRALS ===================== */
 async function renderReferrals(){
   const m = document.getElementById('main');
@@ -707,6 +565,41 @@ async function deleteTask(id){
   await api(`/tasks/${id}`, {method:'DELETE'});
   toast('🗑 تسک حذف شد');
   renderTasks();
+}
+
+/* ===================== GIFT MARKET (escrow oversight) ===================== */
+async function renderGiftMarketAdmin(){
+  const m = document.getElementById('main');
+  m.innerHTML = `
+    <div class="page-head"><div><h1>بازار گیفت کاربران</h1><p>معاملات امانی — پول تو «رزرو‌شده» بلوکه‌ست تا خریدار تایید کنه یا تو دستی حلش کنی</p></div></div>
+    <div class="panel" style="padding:0;"><table>
+      <thead><tr><th>گیفت</th><th>فروشنده</th><th>خریدار</th><th>مبلغ</th><th>وضعیت</th><th></th></tr></thead>
+      <tbody id="gm-tbody"><tr class="empty-row"><td colspan="6">در حال بارگذاری…</td></tr></tbody>
+    </table></div>
+  `;
+  const rows = await api('/gift-listings');
+  const statusLabel = {listed:'در بازار', reserved:'رزرو‌شده (امانت)', completed:'تکمیل‌شده', cancelled:'لغوشده'};
+  document.getElementById('gm-tbody').innerHTML = rows.length ? rows.map(g=>`
+    <tr>
+      <td>${g.title}</td>
+      <td>${g.seller_first_name||'—'}${g.seller_username?' @'+g.seller_username:''}</td>
+      <td>${g.buyer_first_name||'—'}${g.buyer_username?' @'+g.buyer_username:''}</td>
+      <td class="mono">${fmt(g.price_rial)} ت</td>
+      <td><span class="pill ${g.status==='completed'?'active':g.status==='cancelled'?'failed':'pending'}">${statusLabel[g.status]||g.status}</span></td>
+      <td>
+        ${g.status==='reserved' ? `
+          <button class="btn secondary small" onclick="resolveGiftDispute(${g.id},'release')">آزاد به فروشنده</button>
+          <button class="btn danger small" onclick="resolveGiftDispute(${g.id},'refund')">برگشت به خریدار</button>
+        ` : ''}
+      </td>
+    </tr>
+  `).join('') : `<tr class="empty-row"><td colspan="6">آگهی‌ای ثبت نشده</td></tr>`;
+}
+async function resolveGiftDispute(id, action){
+  if(!confirm(action==='release' ? 'مطمئنی پول به فروشنده آزاد بشه؟' : 'مطمئنی پول به خریدار برگرده؟')) return;
+  await api(`/gift-listings/${id}/resolve`, {method:'POST', body:JSON.stringify({action})});
+  toast('✅ ثبت شد');
+  renderGiftMarketAdmin();
 }
 
 /* ===================== INIT ===================== */
