@@ -463,6 +463,16 @@
           <div class="li-text">کیف پول من</div>
           <div class="chev">‹</div>
         </div>
+        <div class="list-row" onclick="goTo('staking')">
+          <div class="li-icon">📈</div>
+          <div class="li-text">استیکینگ (سود موجودی)</div>
+          <div class="chev">‹</div>
+        </div>
+        <div class="list-row" onclick="goTo('tasks')">
+          <div class="li-icon">🎯</div>
+          <div class="li-text">تسک‌ها و جایزه‌ها</div>
+          <div class="chev">‹</div>
+        </div>
         <div class="list-row" onclick="goTo('referral')">
           <div class="li-icon">🤝</div>
           <div class="li-text">زیرمجموعه‌گیری</div>
@@ -482,6 +492,69 @@
 
       <div class="sec-title"><h2>سفارش‌های اخیر</h2></div>
       <div class="list-card" id="orders-list"></div>
+    </section>
+
+    <!-- ============ STAKING ============ -->
+    <section class="page" id="page-staking">
+      <div class="sec-title" style="margin-top:4px;"><h2>📈 استیکینگ</h2></div>
+      <div class="hero" style="margin-bottom:16px;">
+        <h1 id="stake-apr-title">سود <span id="stake-apr">۳۸٪</span> سالانه</h1>
+        <p>بخشی از موجودی کیف‌پولت رو قفل کن و به‌صورت خودکار سود دریافت کن. هر وقت خواستی می‌تونی برداشت کنی.</p>
+      </div>
+      <div class="balance-card" style="margin-bottom:16px;">
+        <div class="row">
+          <div>
+            <div class="label">موجودی استیک‌شده</div>
+            <div class="big"><span id="stake-amount">0</span><span class="unit">تومان</span></div>
+          </div>
+          <div style="text-align:left">
+            <div class="label">سود انباشته</div>
+            <div class="stars-amt" style="color:var(--success);" id="stake-pending">0 ت</div>
+          </div>
+        </div>
+        <div class="divider"></div>
+        <div class="wallet-actions" style="margin:0;">
+          <button class="wbtn primary" onclick="openStakeAction('deposit')"><span>➕</span>واریز به استیکینگ</button>
+          <button class="wbtn" onclick="openStakeAction('withdraw')"><span>➖</span>برداشت</button>
+        </div>
+      </div>
+      <div class="panel-note" style="font-size:11px; color:var(--text-2); line-height:1.8;" id="stake-cap-note"></div>
+    </section>
+
+    <!-- ============ TASKS ============ -->
+    <section class="page" id="page-tasks">
+      <div class="sec-title" style="margin-top:4px;"><h2>🎯 تسک‌ها و جایزه‌ها</h2></div>
+      <div id="tasks-list"></div>
+    </section>
+
+    <!-- ============ GAMES ============ -->
+    <section class="page" id="page-games">
+      <div class="sec-title" style="margin-top:4px;"><h2>🎮 بازی‌ها</h2></div>
+      <div class="hero" style="text-align:center; padding:28px 18px;">
+        <div style="font-size:44px; margin-bottom:6px;">🎡</div>
+        <h1 style="margin-bottom:6px;">چرخ شانس روزانه</h1>
+        <p style="margin:0 auto 16px; max-width:100%;">هر ۲۴ ساعت یک‌بار رایگان بچرخون و جایزه‌ی تصادفی (تا ۵۰,۰۰۰ تومان) ببر — بدون شرط‌بندی، بدون ریسک.</p>
+        <button class="hero-cta" id="wheel-btn" onclick="spinWheel()">🎡 چرخوندن</button>
+        <div style="font-size:11px; color:var(--text-2); margin-top:10px;" id="wheel-status"></div>
+      </div>
+
+      <div class="list-card" style="margin-top:16px;">
+        <div class="list-row" onclick="openCommunityLink('channel')">
+          <div class="li-icon">📢</div>
+          <div class="li-text">عضویت در کانال ما</div>
+          <div class="chev">‹</div>
+        </div>
+        <div class="list-row" onclick="openCommunityLink('chat')">
+          <div class="li-icon">💬</div>
+          <div class="li-text">پیوستن به گروه گفتگو</div>
+          <div class="chev">‹</div>
+        </div>
+        <div class="list-row" onclick="goTo('tasks')">
+          <div class="li-icon">🎯</div>
+          <div class="li-text">تسک‌های بیشتر</div>
+          <div class="chev">‹</div>
+        </div>
+      </div>
     </section>
 
   </main>
@@ -504,6 +577,11 @@
       <svg viewBox="0 0 24 24"><circle cx="9" cy="8" r="3"/><path d="M3 20c0-3 2.7-5 6-5s6 2 6 5"/><circle cx="17" cy="7" r="2.3"/><path d="M15.5 15c2.8.3 4.5 2 4.5 5"/></svg>
       رفرال
       <span class="dot show" id="ref-dot"></span>
+    </button>
+    <button class="tab" data-tab="games" onclick="goTo('games')">
+      <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 3"/></svg>
+      بازی‌ها
+      <span class="dot" id="wheel-dot"></span>
     </button>
     <button class="tab" data-tab="profile" onclick="goTo('profile')">
       <svg viewBox="0 0 24 24"><circle cx="12" cy="8" r="3.4"/><path d="M4.5 20c0-4 3.4-6.5 7.5-6.5s7.5 2.5 7.5 6.5"/></svg>
@@ -558,6 +636,17 @@
 
 <div id="toast"></div>
 
+<!-- ===== STAKE SHEET ===== -->
+<div class="overlay" id="overlay-stake" onclick="if(event.target===this) closeSheet('overlay-stake')">
+  <div class="sheet">
+    <div class="sheet-handle"></div>
+    <div class="sheet-title" id="stake-sheet-title">استیکینگ <span class="x" onclick="closeSheet('overlay-stake')">✕</span></div>
+    <div style="font-size:11.5px; color:var(--text-2); margin-bottom:10px; font-weight:600;" id="stake-sheet-sub"></div>
+    <input class="input-box" id="stake-amount-input" placeholder="مبلغ به تومان…" inputmode="numeric">
+    <button class="btn-main" id="stake-confirm-btn" onclick="confirmStakeAction()">ثبت</button>
+  </div>
+</div>
+
 <script>
 /* ===================== TELEGRAM WEBAPP INIT ===================== */
 const tg = window.Telegram ? window.Telegram.WebApp : null;
@@ -577,7 +666,11 @@ async function api(path, opts = {}) {
     },
   });
   const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data.error || 'خطای سرور');
+  if (!res.ok) {
+    const err = new Error(data.error || 'خطای سرور');
+    if (data.error === 'join_required') { err.joinRequired = true; err.channel = data.channel; }
+    throw err;
+  }
   return data;
 }
 
@@ -611,16 +704,29 @@ async function boot() {
     return;
   }
   try {
-    const [me, products] = await Promise.all([ api('/api/me'), api('/api/products') ]);
+    const [me, products, config] = await Promise.all([ api('/api/me'), api('/api/products'), fetch('/api/config').then(r=>r.json()).catch(()=>({})) ]);
     state.user = { name: `${me.first_name||''}`.trim() || 'کاربر تلگرام', username: me.username ? '@'+me.username : '', id: me.tg_id };
     state.balanceRial = me.balance_rial;
     state.balanceStars = me.balance_stars;
     state.products = products;
+    state.config = config;
     renderChips();
     renderGrid();
     updateHeaderChip();
     updateFab();
   } catch (e) {
+    if (e.joinRequired) {
+      document.getElementById('app').innerHTML = `
+        <div style="padding:60px 24px; text-align:center; color:var(--text-1);">
+          <div style="font-size:34px; margin-bottom:14px;">📢</div>
+          <div style="font-size:14px; font-weight:700; margin-bottom:8px;">اول عضو کانال ما شو</div>
+          <div style="font-size:12px; color:var(--text-2); margin-bottom:20px;">برای استفاده از فروشگاه باید عضو کانال زیر باشی</div>
+          <button class="hero-cta" style="margin-bottom:10px;" onclick="window.open('https://t.me/${e.channel}','_blank')">📢 عضویت در کانال</button>
+          <br>
+          <button class="btn-ghost" style="max-width:220px; margin:10px auto 0;" onclick="location.reload()">✅ عضو شدم، بررسی کن</button>
+        </div>`;
+      return;
+    }
     showToast('❌ خطا در اتصال به سرور: ' + e.message);
   }
 }
@@ -629,10 +735,16 @@ async function boot() {
 const categories = [
   {id:'stars', label:'⭐️ استارز تلگرام'},
   {id:'premium', label:'💎 پرمیوم تلگرام'},
-  {id:'gift', label:'🎁 گیفت‌کارت'},
+  {id:'giftmarket', label:'🎁 مارکت گیفت'},
+  {id:'gift', label:'🛒 گیفت‌کارت'},
   {id:'service', label:'🛠 خدمات تلگرامی'}
 ];
-const categoryIcon = {stars:'⭐️', premium:'💎', gift:'🎁', service:'🛠'};
+const categoryIcon = {stars:'⭐️', premium:'💎', gift:'🛒', giftmarket:'🎁', service:'🛠'};
+// این دسته‌ها موقع خرید یک فیلد متنی اجباری (آیدی/یوزرنیم) از خریدار می‌گیرن
+const categoriesNeedingNote = {
+  premium: 'آیدی یا یوزرنیم اکانتی که می‌خوای پرمیوم روش فعال بشه',
+  giftmarket: 'آیدی یا یوزرنیم گیرنده‌ی گیفت',
+};
 
 function renderChips(){
   document.getElementById('cat-chips').innerHTML = categories.map(c => `
@@ -647,7 +759,9 @@ function renderGrid(){
   if (!items.length) { wrap.innerHTML = `<div class="empty"><div class="e-icon">📭</div><p>فعلاً کالایی در این دسته نیست</p></div>`; return; }
   wrap.innerHTML = items.map(p => `
     <div class="pcard" onclick="quickAdd('${p.id}')">
-      <div class="picon">${categoryIcon[p.category]||'🛍'}</div>
+      ${p.image_url
+        ? `<img src="${p.image_url}" alt="${p.name}" style="width:100%; height:74px; object-fit:cover; border-radius:10px; margin-bottom:2px;" onerror="this.replaceWith(Object.assign(document.createElement('div'),{className:'picon',textContent:'${categoryIcon[p.category]||'🛍'}'}))">`
+        : `<div class="picon">${categoryIcon[p.category]||'🛍'}</div>`}
       <div class="pname">${p.name}</div>
       <div class="pdesc">${p.description||''}</div>
       <div class="prow">
@@ -674,6 +788,9 @@ function goTo(page){
   if(page==='wallet') renderWallet();
   if(page==='referral') renderReferral();
   if(page==='profile') renderProfile();
+  if(page==='staking') renderStaking();
+  if(page==='tasks') renderTasksPage();
+  if(page==='games') renderGames();
   window.scrollTo(0,0);
   haptic('light');
 }
@@ -742,9 +859,21 @@ function openCheckout(){
   closeSheet('overlay-cart');
   const total = cartTotalRial();
   const starsEquiv = Math.ceil(total / 385);
+
+  // اگه تو سبد محصولی از دسته‌ی پرمیوم یا مارکت گیفت باشه، باید آیدی/یوزرنیم مقصد رو بگیریم
+  const neededNoteLabel = Object.keys(state.cart)
+    .map(id => findProduct(id)?.category)
+    .map(cat => categoriesNeedingNote[cat])
+    .find(Boolean);
+
   document.getElementById('checkout-summary').innerHTML = `
     <div class="sum-row"><span>تعداد اقلام</span><span>${cartCount()} کالا</span></div>
     <div class="sum-row total"><span>مبلغ قابل پرداخت</span><b>${fmt(total)} ت</b></div>
+    ${neededNoteLabel ? `
+      <div style="margin-top:14px;">
+        <label style="font-size:11.5px; color:var(--text-1); font-weight:600; display:block; margin-bottom:6px;">${neededNoteLabel}</label>
+        <input id="checkout-note" class="input-box" placeholder="مثلاً @username یا آیدی عددی" style="margin-bottom:0;">
+      </div>` : ''}
   `;
   state.checkoutMethod = 'wallet';
   renderPayOptions(total, starsEquiv);
@@ -769,18 +898,29 @@ function selectPayMethod(id){
   renderPayOptions(cartTotalRial(), Math.ceil(cartTotalRial()/385));
   haptic('light');
 }
+function getCheckoutNote(){
+  const el = document.getElementById('checkout-note');
+  if (!el) return null;
+  const val = el.value.trim();
+  if (!val) { el.style.borderColor = 'var(--danger)'; el.focus(); return undefined; } // undefined = نامعتبر
+  return val;
+}
 async function confirmPayment(){
   const items = cartItemsPayload();
+  const needsNote = !!document.getElementById('checkout-note');
+  const note = needsNote ? getCheckoutNote() : null;
+  if (needsNote && note === undefined) { showToast('❌ لطفاً آیدی/یوزرنیم مقصد رو وارد کن'); return; }
+
   try {
     if (state.checkoutMethod === 'wallet') {
-      await api('/api/checkout/wallet', { method:'POST', body: JSON.stringify({ items }) });
+      await api('/api/checkout/wallet', { method:'POST', body: JSON.stringify({ items, note }) });
       state.cart = {};
       await refreshMe();
       closeSheet('overlay-checkout');
       haptic('heavy');
       showToast('🎉 پرداخت با موفقیت انجام شد');
     } else if (state.checkoutMethod === 'stars') {
-      const { invoiceLink } = await api('/api/checkout/stars-invoice', { method:'POST', body: JSON.stringify({ items }) });
+      const { invoiceLink } = await api('/api/checkout/stars-invoice', { method:'POST', body: JSON.stringify({ items, note }) });
       closeSheet('overlay-checkout');
       if (tg && tg.openInvoice) {
         tg.openInvoice(invoiceLink, async (status) => {
@@ -797,7 +937,7 @@ async function confirmPayment(){
         window.open(invoiceLink, '_blank');
       }
     } else { // gateway
-      const { payUrl } = await api('/api/gateway/start', { method:'POST', body: JSON.stringify({ purpose:'order', items }) });
+      const { payUrl } = await api('/api/gateway/start', { method:'POST', body: JSON.stringify({ purpose:'order', items, note }) });
       closeSheet('overlay-checkout');
       if (tg && tg.openLink) tg.openLink(payUrl); else window.open(payUrl, '_blank');
     }
@@ -933,11 +1073,114 @@ async function renderProfile(){
     document.getElementById('orders-list').innerHTML = rows.length ? rows.map(o=>`
       <div class="order-item">
         <div class="oi">${categoryIcon[findProduct(o.product_id)?.category] || '📦'}</div>
-        <div class="om"><div class="t1">${findProduct(o.product_id)?.name || o.product_id} ×${o.qty}</div><div class="t2">${o.created_at?.slice(0,16)}</div></div>
+        <div class="om"><div class="t1">${findProduct(o.product_id)?.name || o.product_id} ×${o.qty}</div><div class="t2">${o.note ? '🎯 '+o.note+' — ' : ''}${o.created_at?.slice(0,16)}</div></div>
         <div class="order-stat">${statusLabel[o.status]||o.status}</div>
       </div>
     `).join('') : `<div class="empty"><div class="e-icon">📦</div><p>هنوز سفارشی ثبت نشده</p></div>`;
   } catch (e) { showToast('❌ ' + e.message); }
+}
+
+/* ===================== STAKING ===================== */
+let stakeActionMode = 'deposit';
+async function renderStaking(){
+  document.getElementById('stake-amount').textContent = '…';
+  try {
+    const s = await api('/api/stake');
+    document.getElementById('stake-apr').textContent = s.apr + '٪';
+    document.getElementById('stake-amount').textContent = fmt(s.staked_rial);
+    document.getElementById('stake-pending').textContent = '+' + fmt(s.pending_reward) + ' ت';
+    document.getElementById('stake-cap-note').textContent = `سقف استیکینگ هر کاربر: ${fmt(s.cap_rial)} تومان — سود روزانه به‌صورت خودکار محاسبه می‌شه و موقع واریز/برداشت به کیف‌پولت اضافه می‌شه.`;
+    state.stake = s;
+  } catch (e) { showToast('❌ ' + e.message); }
+}
+function openStakeAction(mode){
+  stakeActionMode = mode;
+  document.getElementById('stake-sheet-title').innerHTML = (mode==='deposit' ? 'واریز به استیکینگ' : 'برداشت از استیکینگ') + ' <span class="x" onclick="closeSheet(\'overlay-stake\')">✕</span>';
+  document.getElementById('stake-sheet-sub').textContent = mode==='deposit'
+    ? `موجودی کیف‌پول: ${fmt(state.balanceRial)} تومان`
+    : `موجودی استیک‌شده: ${fmt(state.stake?.staked_rial||0)} تومان`;
+  document.getElementById('stake-amount-input').value = '';
+  openSheet('overlay-stake');
+}
+async function confirmStakeAction(){
+  const amount = Number(document.getElementById('stake-amount-input').value.replace(/[^\d]/g,''));
+  if (!amount || amount < 1000) { showToast('❌ مبلغ معتبر وارد کن'); return; }
+  try {
+    await api(`/api/stake/${stakeActionMode}`, { method:'POST', body: JSON.stringify({ amount }) });
+    closeSheet('overlay-stake');
+    await refreshMe();
+    await renderStaking();
+    haptic('heavy');
+    showToast(stakeActionMode==='deposit' ? '✅ به استیکینگ واریز شد' : '✅ از استیکینگ برداشت شد');
+  } catch (e) { showToast('❌ ' + e.message); }
+}
+
+/* ===================== TASKS ===================== */
+async function renderTasksPage(){
+  document.getElementById('tasks-list').innerHTML = `<div class="empty"><p>در حال بارگذاری…</p></div>`;
+  try {
+    const tasks = await api('/api/tasks');
+    document.getElementById('tasks-list').innerHTML = tasks.length ? tasks.map(t=>`
+      <div class="pcard" style="width:100%; flex-direction:row; align-items:center; gap:12px; margin-bottom:10px;">
+        <div class="picon">${t.type==='join_channel'?'📢':'🔗'}</div>
+        <div style="flex:1;">
+          <div class="pname">${t.title}</div>
+          <div class="pdesc">${t.description||''}</div>
+          <div class="price" style="margin-top:4px;">${t.reward_rial?fmt(t.reward_rial)+' ت':''}${t.reward_rial&&t.reward_stars?' + ':''}${t.reward_stars?'⭐️ '+fmt(t.reward_stars):''}</div>
+        </div>
+        ${t.done
+          ? `<span class="pill active" style="background:rgba(51,217,152,.13); color:var(--success); padding:6px 12px; border-radius:999px; font-size:11px; font-weight:800;">انجام شد ✓</span>`
+          : `<button class="addbtn" style="width:auto; padding:0 14px; height:32px; border-radius:9px;" onclick="doTask('${t.id}','${t.type}','${t.channel_username||''}','${t.link||''}')">انجام بده</button>`}
+      </div>
+    `).join('') : `<div class="empty"><div class="e-icon">🎯</div><p>فعلاً تسکی موجود نیست</p></div>`;
+  } catch (e) { showToast('❌ ' + e.message); }
+}
+async function doTask(id, type, channel, link){
+  if (type === 'join_channel' && channel) window.open('https://t.me/' + channel, '_blank');
+  if (type === 'link' && link) window.open(link, '_blank');
+  try {
+    await api(`/api/tasks/${id}/claim`, { method:'POST' });
+    await refreshMe();
+    await renderTasksPage();
+    haptic('heavy');
+    showToast('🎉 جایزه‌ی تسک دریافت شد');
+  } catch (e) { showToast('❌ ' + e.message); }
+}
+
+/* ===================== GAMES (free daily wheel, no wagering) ===================== */
+async function renderGames(){
+  document.getElementById('wheel-status').textContent = 'در حال بررسی…';
+  try {
+    const s = await api('/api/wheel/status');
+    const btn = document.getElementById('wheel-btn');
+    document.getElementById('wheel-dot').classList.toggle('show', s.canSpin);
+    if (s.canSpin) {
+      btn.disabled = false;
+      btn.style.opacity = 1;
+      document.getElementById('wheel-status').textContent = 'امروز هنوز نچرخوندی — چرخ شانستو امتحان کن!';
+    } else {
+      btn.disabled = true;
+      btn.style.opacity = .5;
+      const remain = s.nextSpinAt - Date.now();
+      const hours = Math.max(1, Math.ceil(remain / 3600000));
+      document.getElementById('wheel-status').textContent = `دفعه بعد تا ${hours} ساعت دیگه می‌تونی بچرخونی`;
+    }
+  } catch (e) { showToast('❌ ' + e.message); }
+}
+async function spinWheel(){
+  try {
+    haptic('medium');
+    const { reward } = await api('/api/wheel/spin', { method:'POST' });
+    await refreshMe();
+    await renderGames();
+    haptic('heavy');
+    showToast(reward > 0 ? `🎉 بردی! ${fmt(reward)} تومان به کیف‌پولت اضافه شد` : '😅 این‌بار جایزه‌ای نگرفتی، فردا دوباره امتحان کن');
+  } catch (e) { showToast('❌ ' + e.message); }
+}
+function openCommunityLink(type){
+  const link = type === 'channel' ? state.config?.channel : state.config?.chat;
+  if (!link) { showToast('این لینک هنوز تنظیم نشده'); return; }
+  window.open('https://t.me/' + link.replace('@',''), '_blank');
 }
 
 /* ===================== TOAST ===================== */
