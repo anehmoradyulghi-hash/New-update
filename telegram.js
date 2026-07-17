@@ -20,6 +20,9 @@ export const sendMessage = (chatId, text, extra = {}) =>
 export const answerPreCheckoutQuery = (id, ok, error_message) =>
   call('answerPreCheckoutQuery', { pre_checkout_query_id: id, ok, ...(error_message ? { error_message } : {}) });
 
+export const answerCallbackQuery = (id, text) =>
+  call('answerCallbackQuery', { callback_query_id: id, ...(text ? { text } : {}) });
+
 // Creates a Telegram Stars invoice link. Currency MUST be "XTR" for Stars, provider_token stays empty.
 // `prices`: array of {label, amount} — one line per cart item; Telegram sums them automatically.
 export async function createStarsInvoiceLink({ title, description, payload, prices }) {
@@ -35,7 +38,15 @@ export async function createStarsInvoiceLink({ title, description, payload, pric
 }
 
 export const setWebhook = (url, secretToken) =>
-  call('setWebhook', { url, secret_token: secretToken, allowed_updates: ['message', 'pre_checkout_query'] });
+  call('setWebhook', { url, secret_token: secretToken, allowed_updates: ['message', 'pre_checkout_query', 'callback_query'] });
+
+// چک عضویت کاربر در یک کانال/گروه (برای جوین اجباری)
+export async function isChannelMember(channelUsername, userId) {
+  if (!channelUsername) return true; // اگه کانالی تنظیم نشده، محدودیتی نیست
+  const data = await call('getChatMember', { chat_id: '@' + channelUsername.replace('@', ''), user_id: userId });
+  if (!data.ok) return false;
+  return !['left', 'kicked'].includes(data.result.status);
+}
 
 // ---- Validates the `initData` string the Mini App sends with every API request ----
 // Docs: https://core.telegram.org/bots/webapps#validating-data-received-via-the-mini-app
