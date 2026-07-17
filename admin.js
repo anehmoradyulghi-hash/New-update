@@ -132,19 +132,19 @@ router.get('/products', (req, res) => {
 });
 
 router.post('/products', (req, res) => {
-  const { id, category, name, description, price_rial } = req.body;
+  const { id, category, name, description, price_rial, image_url } = req.body;
   if (!id || !category || !name || !price_rial) return res.status(400).json({ error: 'فیلدهای ضروری خالی است' });
-  db.prepare('INSERT INTO products (id, category, name, description, price_rial) VALUES (?,?,?,?,?)')
-    .run(id, category, name, description || '', price_rial);
+  db.prepare('INSERT INTO products (id, category, name, description, price_rial, image_url) VALUES (?,?,?,?,?,?)')
+    .run(id, category, name, description || '', price_rial, image_url || null);
   res.json({ ok: true });
 });
 
 router.patch('/products/:id', (req, res) => {
-  const { name, description, price_rial, category, active } = req.body;
+  const { name, description, price_rial, category, active, image_url } = req.body;
   const p = db.prepare('SELECT * FROM products WHERE id = ?').get(req.params.id);
   if (!p) return res.status(404).json({ error: 'not found' });
-  db.prepare(`UPDATE products SET name=?, description=?, price_rial=?, category=?, active=? WHERE id=?`)
-    .run(name ?? p.name, description ?? p.description, price_rial ?? p.price_rial, category ?? p.category, active ?? p.active, req.params.id);
+  db.prepare(`UPDATE products SET name=?, description=?, price_rial=?, category=?, active=?, image_url=? WHERE id=?`)
+    .run(name ?? p.name, description ?? p.description, price_rial ?? p.price_rial, category ?? p.category, active ?? p.active, image_url ?? p.image_url, req.params.id);
   res.json({ ok: true });
 });
 
@@ -179,6 +179,37 @@ router.get('/referrals', (req, res) => {
     ORDER BY commission_earned DESC LIMIT 50
   `).all();
   res.json(rows);
+});
+
+/* =========================================================================
+   TASKS — مدیریت تسک‌ها (اضافه/ویرایش/حذف) از پنل ادمین
+   ========================================================================= */
+router.get('/tasks', (req, res) => {
+  const rows = db.prepare(`
+    SELECT t.*, (SELECT COUNT(*) FROM task_completions c WHERE c.task_id = t.id) AS completions
+    FROM tasks t ORDER BY t.created_at DESC
+  `).all();
+  res.json(rows);
+});
+router.post('/tasks', (req, res) => {
+  const { id, title, description, type, channel_username, link, reward_rial, reward_stars } = req.body;
+  if (!id || !title || !type) return res.status(400).json({ error: 'فیلدهای ضروری خالی است' });
+  db.prepare(`INSERT INTO tasks (id, title, description, type, channel_username, link, reward_rial, reward_stars) VALUES (?,?,?,?,?,?,?,?)`)
+    .run(id, title, description || '', type, channel_username || null, link || null, reward_rial || 0, reward_stars || 0);
+  res.json({ ok: true });
+});
+router.patch('/tasks/:id', (req, res) => {
+  const t = db.prepare('SELECT * FROM tasks WHERE id = ?').get(req.params.id);
+  if (!t) return res.status(404).json({ error: 'not found' });
+  const b = req.body;
+  db.prepare(`UPDATE tasks SET title=?, description=?, type=?, channel_username=?, link=?, reward_rial=?, reward_stars=?, active=? WHERE id=?`)
+    .run(b.title ?? t.title, b.description ?? t.description, b.type ?? t.type, b.channel_username ?? t.channel_username,
+         b.link ?? t.link, b.reward_rial ?? t.reward_rial, b.reward_stars ?? t.reward_stars, b.active ?? t.active, req.params.id);
+  res.json({ ok: true });
+});
+router.delete('/tasks/:id', (req, res) => {
+  db.prepare('DELETE FROM tasks WHERE id = ?').run(req.params.id);
+  res.json({ ok: true });
 });
 
 export default router;
