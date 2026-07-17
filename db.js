@@ -1,234 +1,360 @@
-import express from 'express';
-import crypto from 'crypto';
-import db, { adjustBalance, getAllListingsForAdmin, adminResolveListing } from './db.js';
-import { sendMessage } from './telegram.js';
+import Database from 'better-sqlite3';
 
-const router = express.Router();
-const GIFT_MARKET_FEE = Number(process.env.GIFT_MARKET_FEE_PERCENT || 5);
+const db = new Database('starkadeh.db');
+db.pragma('journal_mode = WAL');
 
-/* =========================================================================
-   AUTH — simple password login, in-memory session tokens.
-   For a single admin panel used by a small team this is enough; for a
-   bigger team, swap this for real accounts + hashed passwords per admin.
-   ========================================================================= */
-const sessions = new Map(); // token -> expiryTimestamp
-const TOKEN_TTL_MS = 12 * 60 * 60 * 1000; // 12h
+// ===================== SCHEMA =====================
+db.exec(`
+CREATE TABLE IF NOT EXISTS users (
+  tg_id INTEGER PRIMARY KEY,
+  username TEXT,
+  first_name TEXT,
+  balance_rial INTEGER NOT NULL DEFAULT 0,
+  balance_stars INTEGER NOT NULL DEFAULT 0,
+  staked_rial INTEGER NOT NULL DEFAULT 0,
+  stake_started_at TEXT,
+  ref_code TEXT UNIQUE,
+  referred_by INTEGER,
+  created_at TEXT DEFAULT (datetime('now'))
+);
 
-function requireAdminAuth(req, res, next) {
-  const auth = req.headers.authorization || '';
-  const token = auth.startsWith('Bearer ') ? auth.slice(7) : null;
-  const expiry = token && sessions.get(token);
-  if (!expiry || expiry < Date.now()) return res.status(401).json({ error: 'unauthorized' });
-  sessions.set(token, Date.now() + TOKEN_TTL_MS); // sliding expiry
-  next();
+CREATE TABLE IF NOT EXISTS tasks (
+  id TEXT PRIMARY KEY,
+  title TEXT NOT NULL,
+  description TEXT,
+  type TEXT NOT NULL DEFAULT 'link',   -- join_channel | link
+  channel_username TEXT,               -- برای type=join_channel، بدون @
+  link TEXT,                           -- برای type=link
+  reward_rial INTEGER NOT NULL DEFAULT 0,
+  reward_stars INTEGER NOT NULL DEFAULT 0,
+  active INTEGER NOT NULL DEFAULT 1,
+  created_at TEXT DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS task_completions (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  tg_id INTEGER NOT NULL,
+  task_id TEXT NOT NULL,
+  created_at TEXT DEFAULT (datetime('now')),
+  UNIQUE(tg_id, task_id)
+);
+
+CREATE TABLE IF NOT EXISTS gift_listings (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  seller_tg_id INTEGER NOT NULL,
+  title TEXT NOT NULL,
+  image_url TEXT,
+  price_rial INTEGER NOT NULL,
+  status TEXT NOT NULL DEFAULT 'listed', -- listed | reserved | completed | cancelled | disputed
+  buyer_tg_id INTEGER,
+  escrow_amount INTEGER,
+  created_at TEXT DEFAULT (datetime('now')),
+  reserved_at TEXT,
+  completed_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS manual_payments (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  tg_id INTEGER NOT NULL,
+  amount_rial INTEGER NOT NULL,
+  tracking_code TEXT,
+  status TEXT NOT NULL DEFAULT 'pending',
+  created_at TEXT DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS products (
+  id TEXT PRIMARY KEY,
+  category TEXT NOT NULL,
+  name TEXT NOT NULL,
+  description TEXT,
+  price_rial INTEGER NOT NULL,
+  image_url TEXT,
+  active INTEGER NOT NULL DEFAULT 1
+);
+
+CREATE TABLE IF NOT EXISTS orders (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  tg_id INTEGER NOT NULL,
+  product_id TEXT NOT NULL,
+  qty INTEGER NOT NULL DEFAULT 1,
+  amount_rial INTEGER NOT NULL,
+  pay_method TEXT NOT NULL,          -- wallet | stars | gateway
+  status TEXT NOT NULL DEFAULT 'pending', -- pending | paid | delivered | failed
+  note TEXT,                         -- گیرنده/آیدی اکانت هدف که خریدار وارد کرده
+  created_at TEXT DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS transactions (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  tg_id INTEGER NOT NULL,
+  type TEXT NOT NULL,                -- in | out
+  currency TEXT NOT NULL,            -- rial | stars
+  amount INTEGER NOT NULL,
+  reason TEXT NOT NULL,
+  ref_id TEXT,
+  created_at TEXT DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS gateway_payments (
+  authority TEXT PRIMARY KEY,
+  tg_id INTEGER NOT NULL,
+  amount_rial INTEGER NOT NULL,
+  purpose TEXT NOT NULL,             -- topup | order:<id>
+  status TEXT NOT NULL DEFAULT 'pending',
+  created_at TEXT DEFAULT (datetime('now'))
+);
+`);
+
+// ===================== SAFE MIGRATIONS (برای دیتابیس‌هایی که قبلاً دیپلوی شده‌اند) =====================
+function tryAddColumn(sql) {
+  try { db.exec(sql); } catch (e) { /* column already exists — ignore */ }
+}
+tryAddColumn(`ALTER TABLE products ADD COLUMN image_url TEXT`);
+tryAddColumn(`ALTER TABLE orders ADD COLUMN note TEXT`);
+tryAddColumn(`ALTER TABLE users ADD COLUMN staked_rial INTEGER NOT NULL DEFAULT 0`);
+tryAddColumn(`ALTER TABLE users ADD COLUMN stake_started_at TEXT`);
+tryAddColumn(`ALTER TABLE users ADD COLUMN last_spin_at TEXT`);
+
+// ===================== SEED PRODUCTS (run once) =====================
+const seed = db.prepare('SELECT COUNT(*) c FROM products').get();
+if (seed.c === 0) {
+  const insert = db.prepare(`INSERT INTO products (id, category, name, description, price_rial) VALUES (?,?,?,?,?)`);
+  const seedData = [
+    ['st100', 'stars', '۱۰۰ استارز', 'واریز آنی به اکانت تلگرام', 39000],
+    ['st500', 'stars', '۵۰۰ استارز', 'واریز آنی + ۵٪ تخفیف حجمی', 185000],
+    ['pm1', 'premium', 'پرمیوم ۱ ماهه', 'فعال‌سازی مستقیم — آیدی اکانت مقصد رو موقع خرید وارد کن', 169000],
+    ['gc-gp', 'gift', 'گیفت‌کارت Google Play ۲۰$', 'کد دیجیتال', 1150000],
+  ];
+  const tx = db.transaction((rows) => rows.forEach(r => insert.run(...r)));
+  tx(seedData);
 }
 
-router.post('/login', (req, res) => {
-  const { password } = req.body;
-  if (!process.env.ADMIN_PANEL_PASSWORD) {
-    return res.status(500).json({ error: 'ADMIN_PANEL_PASSWORD تنظیم نشده' });
+// مارکت گیفت (گیفت‌های پروفایل تلگرام) — جدا از سید بالا تا رو دیتابیس‌های قبلی هم اضافه بشه
+const giftMarketSeed = db.prepare(`SELECT COUNT(*) c FROM products WHERE category='giftmarket'`).get();
+if (giftMarketSeed.c === 0) {
+  const insert = db.prepare(`INSERT INTO products (id, category, name, description, price_rial) VALUES (?,?,?,?,?)`);
+  const rows = [
+    ['gm-rose', 'giftmarket', 'گیفت رز 🌹', 'ارسال به پروفایل هر کاربر — آیدی گیرنده رو موقع خرید وارد کن', 79000],
+    ['gm-heart', 'giftmarket', 'گیفت قلب ❤️', 'ارسال به پروفایل هر کاربر — آیدی گیرنده رو موقع خرید وارد کن', 79000],
+    ['gm-diamond', 'giftmarket', 'گیفت الماس 💎', 'گیفت ویژه با نمایش خاص در پروفایل', 349000],
+    ['gm-crown', 'giftmarket', 'گیفت تاج 👑', 'کمیاب‌ترین گیفت مارکت', 890000],
+  ];
+  const tx = db.transaction((data) => data.forEach(r => insert.run(...r)));
+  tx(rows);
+}
+
+// تسک‌های پیش‌فرض (فقط یک‌بار)
+const taskSeed = db.prepare('SELECT COUNT(*) c FROM tasks').get();
+if (taskSeed.c === 0) {
+  db.prepare(`INSERT INTO tasks (id, title, description, type, channel_username, reward_rial, active) VALUES (?,?,?,?,?,?,1)`)
+    .run('join-main-channel', 'عضویت در کانال استارکده', 'عضو کانال شو و ۱۰,۰۰۰ تومان جایزه بگیر', 'join_channel', 'starkadeh_channel', 10000);
+}
+
+// ===================== HELPERS =====================
+export function getOrCreateUser(tgUser, referrerCode) {
+  let user = db.prepare('SELECT * FROM users WHERE tg_id = ?').get(tgUser.id);
+  if (!user) {
+    const refCode = 'ref_' + tgUser.id;
+    let referredBy = null;
+    if (referrerCode) {
+      const referrer = db.prepare('SELECT tg_id FROM users WHERE ref_code = ?').get(referrerCode);
+      if (referrer && referrer.tg_id !== tgUser.id) referredBy = referrer.tg_id;
+    }
+    db.prepare(`INSERT INTO users (tg_id, username, first_name, ref_code, referred_by) VALUES (?,?,?,?,?)`)
+      .run(tgUser.id, tgUser.username || null, tgUser.first_name || null, refCode, referredBy);
+    user = db.prepare('SELECT * FROM users WHERE tg_id = ?').get(tgUser.id);
   }
-  if (password !== process.env.ADMIN_PANEL_PASSWORD) {
-    return res.status(401).json({ error: 'رمز عبور اشتباه است' });
+  return user;
+}
+
+export function getUser(tgId) {
+  return db.prepare('SELECT * FROM users WHERE tg_id = ?').get(tgId);
+}
+
+export function adjustBalance(tgId, currency, delta, reason, refId = null) {
+  const col = currency === 'stars' ? 'balance_stars' : 'balance_rial';
+  db.prepare(`UPDATE users SET ${col} = ${col} + ? WHERE tg_id = ?`).run(delta, tgId);
+  db.prepare(`INSERT INTO transactions (tg_id, type, currency, amount, reason, ref_id) VALUES (?,?,?,?,?,?)`)
+    .run(tgId, delta >= 0 ? 'in' : 'out', currency, Math.abs(delta), reason, refId);
+}
+
+// 10% referral commission credited to the referrer's rial balance when a paid order is confirmed
+export function payReferralCommission(buyerTgId, orderAmountRial) {
+  const buyer = getUser(buyerTgId);
+  if (buyer && buyer.referred_by) {
+    const commission = Math.floor(orderAmountRial * 0.10);
+    if (commission > 0) {
+      adjustBalance(buyer.referred_by, 'rial', commission, 'پورسانت رفرال از خرید زیرمجموعه', String(buyerTgId));
+    }
   }
-  const token = crypto.randomBytes(24).toString('hex');
-  sessions.set(token, Date.now() + TOKEN_TTL_MS);
-  res.json({ token });
-});
+}
 
-router.post('/logout', requireAdminAuth, (req, res) => {
-  const token = req.headers.authorization.slice(7);
-  sessions.delete(token);
-  res.json({ ok: true });
-});
+export function createOrder(tgId, productId, qty, amountRial, payMethod, note = null) {
+  const info = db.prepare(`INSERT INTO orders (tg_id, product_id, qty, amount_rial, pay_method, status, note) VALUES (?,?,?,?,?, 'paid', ?)`)
+    .run(tgId, productId, qty, amountRial, payMethod, note);
+  return info.lastInsertRowid;
+}
 
-router.use(requireAdminAuth); // همه مسیرهای زیر نیاز به لاگین دارن
+export function getProduct(id) {
+  return db.prepare('SELECT * FROM products WHERE id = ? AND active = 1').get(id);
+}
 
-/* =========================================================================
-   DASHBOARD / STATS
-   ========================================================================= */
-router.get('/stats', (req, res) => {
-  const users = db.prepare('SELECT COUNT(*) c FROM users').get().c;
-  const orders = db.prepare('SELECT COUNT(*) c FROM orders').get().c;
-  const rialIn = db.prepare(`SELECT COALESCE(SUM(amount),0) s FROM transactions WHERE type='in' AND currency='rial'`).get().s;
-  const rialOut = db.prepare(`SELECT COALESCE(SUM(amount),0) s FROM transactions WHERE type='out' AND currency='rial'`).get().s;
-  const starsIn = db.prepare(`SELECT COALESCE(SUM(amount),0) s FROM transactions WHERE type='in' AND currency='stars'`).get().s;
-  const todayOrders = db.prepare(`SELECT COUNT(*) c FROM orders WHERE date(created_at) = date('now')`).get().c;
-  const revenueByDay = db.prepare(`
-    SELECT date(created_at) d, COALESCE(SUM(amount_rial),0) total
-    FROM orders WHERE created_at >= datetime('now','-14 day')
-    GROUP BY d ORDER BY d ASC
-  `).all();
-  const topProducts = db.prepare(`
-    SELECT product_id, COUNT(*) sales, COALESCE(SUM(amount_rial),0) revenue
-    FROM orders GROUP BY product_id ORDER BY revenue DESC LIMIT 5
-  `).all();
-  res.json({ users, orders, todayOrders, rialIn, rialOut, starsIn, revenueByDay, topProducts });
-});
+/* ===================== STAKING ===================== */
+const YEAR_MS = 365 * 24 * 60 * 60 * 1000;
 
-/* =========================================================================
-   USERS
-   ========================================================================= */
-router.get('/users', (req, res) => {
-  const { q = '', limit = 50, offset = 0 } = req.query;
-  const rows = db.prepare(`
-    SELECT * FROM users
-    WHERE CAST(tg_id AS TEXT) LIKE ? OR username LIKE ? OR first_name LIKE ?
-    ORDER BY created_at DESC LIMIT ? OFFSET ?
-  `).all(`%${q}%`, `%${q}%`, `%${q}%`, Number(limit), Number(offset));
-  const total = db.prepare('SELECT COUNT(*) c FROM users').get().c;
-  res.json({ rows, total });
-});
-
-router.get('/users/:tgId', (req, res) => {
-  const user = db.prepare('SELECT * FROM users WHERE tg_id = ?').get(req.params.tgId);
-  if (!user) return res.status(404).json({ error: 'not found' });
-  const orders = db.prepare('SELECT * FROM orders WHERE tg_id = ? ORDER BY created_at DESC LIMIT 20').all(req.params.tgId);
-  const transactions = db.prepare('SELECT * FROM transactions WHERE tg_id = ? ORDER BY created_at DESC LIMIT 30').all(req.params.tgId);
-  const referrals = db.prepare('SELECT tg_id, username, first_name, created_at FROM users WHERE referred_by = ?').all(req.params.tgId);
-  res.json({ user, orders, transactions, referrals });
-});
-
-// شارژ یا کسر دستی موجودی (مثبت = شارژ، منفی = کسر)
-router.post('/users/:tgId/adjust-balance', (req, res) => {
-  const { currency, amount, reason } = req.body; // currency: 'rial' | 'stars'
-  if (!['rial', 'stars'].includes(currency) || !Number.isFinite(amount) || amount === 0) {
-    return res.status(400).json({ error: 'ورودی نامعتبر' });
+// محاسبه و واریز پاداش انباشته‌شده تا همین لحظه، بعد تایمر رو ریست می‌کنه (checkpoint)
+export function settleStake(tgId, aprPercent) {
+  const user = getUser(tgId);
+  if (!user.staked_rial || !user.stake_started_at) return;
+  const elapsedMs = Date.now() - new Date(user.stake_started_at + 'Z').getTime();
+  const reward = Math.floor(user.staked_rial * (aprPercent / 100) * (elapsedMs / YEAR_MS));
+  db.prepare(`UPDATE users SET stake_started_at = datetime('now') WHERE tg_id = ?`).run(tgId);
+  if (reward > 0) {
+    adjustBalance(tgId, 'rial', reward, 'پاداش استیکینگ');
   }
-  const tgId = Number(req.params.tgId);
-  adjustBalance(tgId, currency, amount, reason || 'اصلاح دستی توسط ادمین');
-  const label = currency === 'stars' ? `${amount}⭐️` : `${amount.toLocaleString()} تومان`;
-  sendMessage(tgId, `💰 موجودی شما ${amount > 0 ? 'افزایش' : 'کاهش'} یافت: ${label}\nدلیل: ${reason || 'اصلاح توسط پشتیبانی'}`).catch(() => {});
-  res.json({ ok: true, user: db.prepare('SELECT * FROM users WHERE tg_id = ?').get(tgId) });
-});
+}
 
-/* =========================================================================
-   ORDERS
-   ========================================================================= */
-router.get('/orders', (req, res) => {
-  const { status = '', limit = 50, offset = 0 } = req.query;
-  const rows = status
-    ? db.prepare(`SELECT o.*, u.username, u.first_name FROM orders o JOIN users u ON u.tg_id=o.tg_id WHERE o.status=? ORDER BY o.created_at DESC LIMIT ? OFFSET ?`).all(status, Number(limit), Number(offset))
-    : db.prepare(`SELECT o.*, u.username, u.first_name FROM orders o JOIN users u ON u.tg_id=o.tg_id ORDER BY o.created_at DESC LIMIT ? OFFSET ?`).all(Number(limit), Number(offset));
-  const total = db.prepare('SELECT COUNT(*) c FROM orders').get().c;
-  res.json({ rows, total });
-});
+export function pendingStakeReward(user, aprPercent) {
+  if (!user.staked_rial || !user.stake_started_at) return 0;
+  const elapsedMs = Date.now() - new Date(user.stake_started_at + 'Z').getTime();
+  return Math.floor(user.staked_rial * (aprPercent / 100) * (elapsedMs / YEAR_MS));
+}
 
-router.patch('/orders/:id', (req, res) => {
-  const { status } = req.body; // pending | paid | delivered | failed
-  if (!['pending', 'paid', 'delivered', 'failed'].includes(status)) return res.status(400).json({ error: 'وضعیت نامعتبر' });
-  db.prepare('UPDATE orders SET status = ? WHERE id = ?').run(status, req.params.id);
-  const order = db.prepare('SELECT * FROM orders WHERE id = ?').get(req.params.id);
-  if (status === 'delivered') {
-    sendMessage(order.tg_id, `📦 سفارش شما (#${order.id}) تحویل داده شد.`).catch(() => {});
-  }
-  res.json({ ok: true, order });
-});
+export function stakeDeposit(tgId, amount, aprPercent, capRial) {
+  settleStake(tgId, aprPercent);
+  const user = getUser(tgId);
+  if (user.balance_rial < amount) throw new Error('موجودی کیف‌پول کافی نیست');
+  if (user.staked_rial + amount > capRial) throw new Error(`سقف استیکینگ ${capRial.toLocaleString()} تومانه`);
+  db.prepare(`UPDATE users SET balance_rial = balance_rial - ?, staked_rial = staked_rial + ?, stake_started_at = COALESCE(stake_started_at, datetime('now')) WHERE tg_id = ?`)
+    .run(amount, amount, tgId);
+  db.prepare(`INSERT INTO transactions (tg_id, type, currency, amount, reason) VALUES (?,?,?,?,?)`)
+    .run(tgId, 'out', 'rial', amount, 'واریز به استیکینگ');
+}
 
-/* =========================================================================
-   PRODUCTS
-   ========================================================================= */
-router.get('/products', (req, res) => {
-  res.json(db.prepare('SELECT * FROM products ORDER BY category, name').all());
-});
+export function stakeWithdraw(tgId, amount, aprPercent) {
+  settleStake(tgId, aprPercent);
+  const user = getUser(tgId);
+  if (amount > user.staked_rial) throw new Error('مبلغ بیشتر از موجودی استیک‌شده است');
+  db.prepare(`UPDATE users SET balance_rial = balance_rial + ?, staked_rial = staked_rial - ? WHERE tg_id = ?`)
+    .run(amount, amount, tgId);
+  db.prepare(`INSERT INTO transactions (tg_id, type, currency, amount, reason) VALUES (?,?,?,?,?)`)
+    .run(tgId, 'in', 'rial', amount, 'برداشت از استیکینگ');
+}
 
-router.post('/products', (req, res) => {
-  const { id, category, name, description, price_rial, image_url } = req.body;
-  if (!id || !category || !name || !price_rial) return res.status(400).json({ error: 'فیلدهای ضروری خالی است' });
-  db.prepare('INSERT INTO products (id, category, name, description, price_rial, image_url) VALUES (?,?,?,?,?,?)')
-    .run(id, category, name, description || '', price_rial, image_url || null);
-  res.json({ ok: true });
-});
+/* ===================== TASKS ===================== */
+export function listActiveTasks() {
+  return db.prepare('SELECT * FROM tasks WHERE active = 1 ORDER BY created_at').all();
+}
+export function isTaskDone(tgId, taskId) {
+  return !!db.prepare('SELECT 1 FROM task_completions WHERE tg_id = ? AND task_id = ?').get(tgId, taskId);
+}
+export function completeTask(tgId, task) {
+  db.prepare('INSERT OR IGNORE INTO task_completions (tg_id, task_id) VALUES (?,?)').run(tgId, task.id);
+  if (task.reward_rial) adjustBalance(tgId, 'rial', task.reward_rial, `پاداش تسک: ${task.title}`);
+  if (task.reward_stars) adjustBalance(tgId, 'stars', task.reward_stars, `پاداش تسک: ${task.title}`);
+}
 
-router.patch('/products/:id', (req, res) => {
-  const { name, description, price_rial, category, active, image_url } = req.body;
-  const p = db.prepare('SELECT * FROM products WHERE id = ?').get(req.params.id);
-  if (!p) return res.status(404).json({ error: 'not found' });
-  db.prepare(`UPDATE products SET name=?, description=?, price_rial=?, category=?, active=?, image_url=? WHERE id=?`)
-    .run(name ?? p.name, description ?? p.description, price_rial ?? p.price_rial, category ?? p.category, active ?? p.active, image_url ?? p.image_url, req.params.id);
-  res.json({ ok: true });
-});
+export default db;
 
-router.delete('/products/:id', (req, res) => {
-  db.prepare('DELETE FROM products WHERE id = ?').run(req.params.id);
-  res.json({ ok: true });
-});
+/* ===================== GIFT MARKET (P2P, escrow-based — مثل پرتال) =====================
+   کاربر گیفت واقعی خودش رو (که تو تلگرام داره) اینجا لیست می‌کنه.
+   پول خریدار موقع خرید بلوکه می‌شه (امانت)، فروشنده گیفت رو دستی تو تلگرام می‌فرسته،
+   خریدار دریافتش رو تایید می‌کنه و تازه اونوقت پول (منهای کارمزد) آزاد می‌شه.
+   ================================================================================== */
+export function createListing(sellerTgId, title, imageUrl, price) {
+  const info = db.prepare(`INSERT INTO gift_listings (seller_tg_id, title, image_url, price_rial) VALUES (?,?,?,?)`)
+    .run(sellerTgId, title, imageUrl || null, price);
+  return info.lastInsertRowid;
+}
+export function getListing(id) {
+  return db.prepare('SELECT * FROM gift_listings WHERE id = ?').get(id);
+}
+export function getMarketListings(excludeTgId) {
+  return db.prepare(`
+    SELECT g.*, u.username, u.first_name FROM gift_listings g
+    JOIN users u ON u.tg_id = g.seller_tg_id
+    WHERE g.status = 'listed' AND g.seller_tg_id != ?
+    ORDER BY g.created_at DESC
+  `).all(excludeTgId);
+}
+export function getMyListings(tgId) {
+  return db.prepare(`
+    SELECT g.*,
+      su.username AS seller_username, su.first_name AS seller_first_name,
+      bu.username AS buyer_username, bu.first_name AS buyer_first_name
+    FROM gift_listings g
+    LEFT JOIN users su ON su.tg_id = g.seller_tg_id
+    LEFT JOIN users bu ON bu.tg_id = g.buyer_tg_id
+    WHERE g.seller_tg_id = ? OR g.buyer_tg_id = ?
+    ORDER BY g.created_at DESC
+  `).all(tgId, tgId);
+}
+export function cancelListing(sellerTgId, id) {
+  const g = getListing(id);
+  if (!g || g.seller_tg_id !== Number(sellerTgId)) throw new Error('این آگهی مال تو نیست');
+  if (g.status !== 'listed') throw new Error('فقط آگهی‌های هنوز نفروخته قابل لغوه');
+  db.prepare(`UPDATE gift_listings SET status = 'cancelled' WHERE id = ?`).run(id);
+}
+export function reserveListing(buyerTgId, id) {
+  const g = getListing(id);
+  if (!g) throw new Error('آگهی پیدا نشد');
+  if (g.status !== 'listed') throw new Error('این گیفت دیگه در دسترس نیست');
+  if (g.seller_tg_id === Number(buyerTgId)) throw new Error('نمی‌تونی گیفت خودتو بخری');
+  const buyer = getUser(buyerTgId);
+  if (buyer.balance_rial < g.price_rial) throw new Error('موجودی کیف‌پول کافی نیست');
 
-/* =========================================================================
-   TRANSACTIONS
-   ========================================================================= */
-router.get('/transactions', (req, res) => {
-  const { limit = 80, offset = 0 } = req.query;
-  const rows = db.prepare(`
-    SELECT t.*, u.username, u.first_name FROM transactions t
-    JOIN users u ON u.tg_id = t.tg_id
-    ORDER BY t.created_at DESC LIMIT ? OFFSET ?
-  `).all(Number(limit), Number(offset));
-  res.json(rows);
-});
+  adjustBalance(buyerTgId, 'rial', -g.price_rial, `پرداخت امانی برای گیفت «${g.title}»`, String(id));
+  db.prepare(`UPDATE gift_listings SET status='reserved', buyer_tg_id=?, escrow_amount=?, reserved_at=datetime('now') WHERE id=?`)
+    .run(buyerTgId, g.price_rial, id);
+  return g;
+}
+export function confirmReceived(buyerTgId, id, feePercent) {
+  const g = getListing(id);
+  if (!g) throw new Error('آگهی پیدا نشد');
+  if (g.buyer_tg_id !== Number(buyerTgId)) throw new Error('این معامله مال تو نیست');
+  if (g.status !== 'reserved') throw new Error('این معامله در وضعیت قابل‌تاییدی نیست');
 
-/* =========================================================================
-   REFERRALS — top referrers by number of invites and commission paid
-   ========================================================================= */
-router.get('/referrals', (req, res) => {
-  const rows = db.prepare(`
-    SELECT u.tg_id, u.username, u.first_name,
-      (SELECT COUNT(*) FROM users r WHERE r.referred_by = u.tg_id) AS invited_count,
-      COALESCE((SELECT SUM(amount) FROM transactions t WHERE t.tg_id = u.tg_id AND t.reason LIKE 'پورسانت%'),0) AS commission_earned
-    FROM users u
-    WHERE invited_count > 0
-    ORDER BY commission_earned DESC LIMIT 50
+  const fee = Math.floor(g.escrow_amount * (feePercent / 100));
+  const sellerReceives = g.escrow_amount - fee;
+  adjustBalance(g.seller_tg_id, 'rial', sellerReceives, `فروش گیفت «${g.title}» در بازار کاربران`, String(id));
+  db.prepare(`UPDATE gift_listings SET status='completed', completed_at=datetime('now') WHERE id=?`).run(id);
+  return { ...g, sellerReceives };
+}
+// ادمین برای حل اختلاف: یا پول رو به فروشنده آزاد می‌کنه یا به خریدار برمی‌گردونه
+export function adminResolveListing(id, action, feePercent) {
+  const g = getListing(id);
+  if (!g || g.status !== 'reserved') throw new Error('قابل رسیدگی نیست');
+  if (action === 'release') {
+    const fee = Math.floor(g.escrow_amount * (feePercent / 100));
+    adjustBalance(g.seller_tg_id, 'rial', g.escrow_amount - fee, `آزادسازی امانت توسط ادمین — گیفت «${g.title}»`, String(id));
+    db.prepare(`UPDATE gift_listings SET status='completed', completed_at=datetime('now') WHERE id=?`).run(id);
+  } else if (action === 'refund') {
+    adjustBalance(g.buyer_tg_id, 'rial', g.escrow_amount, `بازگشت وجه توسط ادمین — گیفت «${g.title}»`, String(id));
+    db.prepare(`UPDATE gift_listings SET status='cancelled' WHERE id=?`).run(id);
+  } else throw new Error('عملیات نامعتبر');
+  return g;
+}
+export function getAllListingsForAdmin() {
+  return db.prepare(`
+    SELECT g.*,
+      su.username AS seller_username, su.first_name AS seller_first_name,
+      bu.username AS buyer_username, bu.first_name AS buyer_first_name
+    FROM gift_listings g
+    LEFT JOIN users su ON su.tg_id = g.seller_tg_id
+    LEFT JOIN users bu ON bu.tg_id = g.buyer_tg_id
+    ORDER BY g.created_at DESC LIMIT 200
   `).all();
-  res.json(rows);
-});
+}
 
-/* =========================================================================
-   TASKS — مدیریت تسک‌ها (اضافه/ویرایش/حذف) از پنل ادمین
-   ========================================================================= */
-router.get('/tasks', (req, res) => {
-  const rows = db.prepare(`
-    SELECT t.*, (SELECT COUNT(*) FROM task_completions c WHERE c.task_id = t.id) AS completions
-    FROM tasks t ORDER BY t.created_at DESC
-  `).all();
-  res.json(rows);
-});
-router.post('/tasks', (req, res) => {
-  const { id, title, description, type, channel_username, link, reward_rial, reward_stars } = req.body;
-  if (!id || !title || !type) return res.status(400).json({ error: 'فیلدهای ضروری خالی است' });
-  db.prepare(`INSERT INTO tasks (id, title, description, type, channel_username, link, reward_rial, reward_stars) VALUES (?,?,?,?,?,?,?,?)`)
-    .run(id, title, description || '', type, channel_username || null, link || null, reward_rial || 0, reward_stars || 0);
-  res.json({ ok: true });
-});
-router.patch('/tasks/:id', (req, res) => {
-  const t = db.prepare('SELECT * FROM tasks WHERE id = ?').get(req.params.id);
-  if (!t) return res.status(404).json({ error: 'not found' });
-  const b = req.body;
-  db.prepare(`UPDATE tasks SET title=?, description=?, type=?, channel_username=?, link=?, reward_rial=?, reward_stars=?, active=? WHERE id=?`)
-    .run(b.title ?? t.title, b.description ?? t.description, b.type ?? t.type, b.channel_username ?? t.channel_username,
-         b.link ?? t.link, b.reward_rial ?? t.reward_rial, b.reward_stars ?? t.reward_stars, b.active ?? t.active, req.params.id);
-  res.json({ ok: true });
-});
-router.delete('/tasks/:id', (req, res) => {
-  db.prepare('DELETE FROM tasks WHERE id = ?').run(req.params.id);
-  res.json({ ok: true });
-});
-
-/* =========================================================================
-   GIFT MARKET — نظارت و حل اختلاف امانت‌ها
-   ========================================================================= */
-router.get('/gift-listings', (req, res) => {
-  res.json(getAllListingsForAdmin());
-});
-router.post('/gift-listings/:id/resolve', (req, res) => {
-  const { action } = req.body; // release | refund
-  try {
-    const g = adminResolveListing(req.params.id, action, GIFT_MARKET_FEE);
-    const msg = action === 'release'
-      ? `✅ ادمین معامله گیفت «${g.title}» رو تایید کرد و پول به فروشنده واریز شد.`
-      : `↩️ ادمین معامله گیفت «${g.title}» رو لغو کرد و پول به کیف‌پولت برگشت.`;
-    sendMessage(action === 'release' ? g.seller_tg_id : g.buyer_tg_id, msg).catch(() => {});
-    res.json({ ok: true });
-  } catch (e) { res.status(400).json({ error: e.message }); }
-});
-
-export default router;
+/* ===================== MANUAL CARD-TO-CARD PAYMENTS ===================== */
+export function createManualPayment(tgId, amountRial, trackingCode) {
+  const info = db.prepare(`INSERT INTO manual_payments (tg_id, amount_rial, tracking_code) VALUES (?,?,?)`)
+    .run(tgId, amountRial, trackingCode);
+  return info.lastInsertRowid;
+}
+export function getManualPayment(id) {
+  return db.prepare('SELECT * FROM manual_payments WHERE id = ?').get(id);
+}
+export function setManualPaymentStatus(id, status) {
+  db.prepare('UPDATE manual_payments SET status = ? WHERE id = ?').run(status, id);
+}
