@@ -1,13 +1,10 @@
 import express from 'express';
 import crypto from 'crypto';
-import db, {
-  adjustBalance,
-  listCardTopups, approveCardTopup, rejectCardTopup,
-  adminListListings, adminListOrders, adminReleaseOrder, adminRefundOrder, adminSetListingStatus,
-} from './db.js';
+import db, { adjustBalance, getAllListingsForAdmin, adminResolveListing } from './db.js';
 import { sendMessage } from './telegram.js';
 
 const router = express.Router();
+const GIFT_MARKET_FEE = Number(process.env.GIFT_MARKET_FEE_PERCENT || 5);
 
 /* =========================================================================
    AUTH — simple password login, in-memory session tokens.
@@ -217,49 +214,19 @@ router.delete('/tasks/:id', (req, res) => {
 });
 
 /* =========================================================================
-   CARD-TO-CARD TOP-UPS — تایید/رد درخواست‌های شارژ کارت‌به‌کارت
+   GIFT MARKET — نظارت و حل اختلاف امانت‌ها
    ========================================================================= */
-router.get('/card-topups', (req, res) => {
-  const { status = '' } = req.query;
-  res.json(listCardTopups(status || null));
+router.get('/gift-listings', (req, res) => {
+  res.json(getAllListingsForAdmin());
 });
-router.post('/card-topups/:id/approve', (req, res) => {
+router.post('/gift-listings/:id/resolve', (req, res) => {
+  const { action } = req.body; // release | refund
   try {
-    const row = approveCardTopup(Number(req.params.id));
-    sendMessage(row.tg_id, `✅ درخواست شارژ کارت‌به‌کارت شما تایید شد.\nمبلغ ${row.amount_rial.toLocaleString()} تومان به کیف‌پولت اضافه شد.`).catch(() => {});
-    res.json({ ok: true });
-  } catch (e) { res.status(400).json({ error: e.message }); }
-});
-router.post('/card-topups/:id/reject', (req, res) => {
-  try {
-    const row = rejectCardTopup(Number(req.params.id), req.body?.note);
-    sendMessage(row.tg_id, `❌ درخواست شارژ کارت‌به‌کارت شما رد شد.${req.body?.note ? `\nدلیل: ${req.body.note}` : ''}`).catch(() => {});
-    res.json({ ok: true });
-  } catch (e) { res.status(400).json({ error: e.message }); }
-});
-
-/* =========================================================================
-   MARKETPLACE — نظارت بر آگهی‌ها و سفارش‌های مارکت گیفت (پی‌توپی)
-   ========================================================================= */
-router.get('/market/listings', (req, res) => res.json(adminListListings()));
-router.patch('/market/listings/:id', (req, res) => {
-  const { status } = req.body;
-  if (!['active', 'reserved', 'sold', 'cancelled'].includes(status)) return res.status(400).json({ error: 'وضعیت نامعتبر' });
-  adminSetListingStatus(Number(req.params.id), status);
-  res.json({ ok: true });
-});
-router.get('/market/orders', (req, res) => res.json(adminListOrders()));
-router.post('/market/orders/:id/release', (req, res) => {
-  try {
-    const order = adminReleaseOrder(Number(req.params.id));
-    sendMessage(order.seller_tg_id, `✅ ادمین سفارش #${order.id} رو تایید کرد.\nمبلغ ${(order.price_rial - order.fee_rial).toLocaleString()} تومان به کیف‌پولت واریز شد.`).catch(() => {});
-    res.json({ ok: true });
-  } catch (e) { res.status(400).json({ error: e.message }); }
-});
-router.post('/market/orders/:id/refund', (req, res) => {
-  try {
-    const order = adminRefundOrder(Number(req.params.id));
-    sendMessage(order.buyer_tg_id, `↩️ سفارش #${order.id} توسط ادمین لغو شد و مبلغ ${order.price_rial.toLocaleString()} تومان به کیف‌پولت برگشت.`).catch(() => {});
+    const g = adminResolveListing(req.params.id, action, GIFT_MARKET_FEE);
+    const msg = action === 'release'
+      ? `✅ ادمین معامله گیفت «${g.title}» رو تایید کرد و پول به فروشنده واریز شد.`
+      : `↩️ ادمین معامله گیفت «${g.title}» رو لغو کرد و پول به کیف‌پولت برگشت.`;
+    sendMessage(action === 'release' ? g.seller_tg_id : g.buyer_tg_id, msg).catch(() => {});
     res.json({ ok: true });
   } catch (e) { res.status(400).json({ error: e.message }); }
 });
