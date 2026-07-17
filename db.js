@@ -80,6 +80,42 @@ CREATE TABLE IF NOT EXISTS gateway_payments (
   status TEXT NOT NULL DEFAULT 'pending',
   created_at TEXT DEFAULT (datetime('now'))
 );
+
+CREATE TABLE IF NOT EXISTS card_topups (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  tg_id INTEGER NOT NULL,
+  amount_rial INTEGER NOT NULL,
+  card_last4 TEXT,
+  track_code TEXT,
+  note TEXT,
+  status TEXT NOT NULL DEFAULT 'pending',   -- pending | approved | rejected
+  admin_note TEXT,
+  created_at TEXT DEFAULT (datetime('now')),
+  reviewed_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS market_listings (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  seller_tg_id INTEGER NOT NULL,
+  title TEXT NOT NULL,
+  description TEXT,
+  price_rial INTEGER NOT NULL,
+  image_url TEXT,
+  status TEXT NOT NULL DEFAULT 'active',    -- active | reserved | sold | cancelled
+  created_at TEXT DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS market_orders (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  listing_id INTEGER NOT NULL,
+  buyer_tg_id INTEGER NOT NULL,
+  seller_tg_id INTEGER NOT NULL,
+  price_rial INTEGER NOT NULL,
+  fee_rial INTEGER NOT NULL DEFAULT 0,
+  status TEXT NOT NULL DEFAULT 'pending_transfer', -- pending_transfer | completed | disputed | refunded | cancelled
+  created_at TEXT DEFAULT (datetime('now')),
+  completed_at TEXT
+);
 `);
 
 // ===================== SAFE MIGRATIONS (برای دیتابیس‌هایی که قبلاً دیپلوی شده‌اند) =====================
@@ -229,6 +265,150 @@ export function completeTask(tgId, task) {
   db.prepare('INSERT OR IGNORE INTO task_completions (tg_id, task_id) VALUES (?,?)').run(tgId, task.id);
   if (task.reward_rial) adjustBalance(tgId, 'rial', task.reward_rial, `پاداش تسک: ${task.title}`);
   if (task.reward_stars) adjustBalance(tgId, 'stars', task.reward_stars, `پاداش تسک: ${task.title}`);
+}
+
+/* ===================== CARD-TO-CARD TOP-UP ===================== */
+export function createCardTopup(tgId, amountRial, cardLast4, trackCode, note) {
+  const info = db.prepare(`INSERT INTO card_topups (tg_id, amount_rial, card_last4, track_code, note) VALUES (?,?,?,?,?)`)
+    .run(tgId, amountRial, cardLast4 || null, trackCode || null, note || null);
+  return info.lastInsertRowid;
+}
+export function listCardTopups(status) {
+  return status
+    ? db.prepare(`SELECT c.*, u.username, u.first_name FROM card_topups c JOIN users u ON u.tg_id=c.tg_id WHERE c.status=? ORDER BY c.created_at DESC`).all(status)
+    : db.prepare(`SELECT c.*, u.username, u.first_name FROM card_topups c JOIN users u ON u.tg_id=c.tg_id ORDER BY c.created_at DESC`).all();
+}
+export function getCardTopup(id) {
+  return db.prepare('SELECT * FROM card_topups WHERE id = ?').get(id);
+}
+export function approveCardTopup(id) {
+  const row = getCardTopup(id);
+  if (!row) throw new Error('درخواست پیدا نشد');
+  if (row.status !== 'pending') throw new Error('این درخواست قبلاً بررسی شده');
+  db.prepare(`UPDATE card_topups SET status='approved', reviewed_at=datetime('now') WHERE id=?`).run(id);
+  adjustBalance(row.tg_id, 'rial', row.amount_rial, 'شارژ کیف‌پول (کارت‌به‌کارت)', String(id));
+  return row;
+}
+export function rejectCardTopup(id, adminNote) {
+  const row = getCardTopup(id);
+  if (!row) throw new Error('درخواست پیدا نشد');
+  if (row.status !== 'pending') throw new Error('این درخواست قبلاً بررسی شده');
+  db.prepare(`UPDATE card_topups SET status='rejected', admin_note=?, reviewed_at=datetime('now') WHERE id=?`).run(adminNote || null, id);
+  return row;
+}
+
+/* ===================== P2P GIFT MARKETPLACE (مثل پرتال) ===================== */
+export function createListing(tgId, title, description, priceRial, imageUrl) {
+  const info = db.prepare(`INSERT INTO market_listings (seller_tg_id, title, description, price_rial, image_url) VALUES (?,?,?,?,?)`)
+    .run(tgId, title, description || null, priceRial, imageUrl || null);
+  return info.lastInsertRowid;
+}
+export function listActiveListings(excludeTgId) {
+  return db.prepare(`
+    SELECT l.*, u.username, u.first_name FROM market_listings l
+    JOIN users u ON u.tg_id = l.seller_tg_id
+    WHERE l.status='active' AND l.seller_tg_id != ?
+    ORDER BY l.created_at DESC
+  `).all(excludeTgId || 0);
+}
+export function myListings(tgId) {
+  return db.prepare('SELECT * FROM market_listings WHERE seller_tg_id = ? ORDER BY created_at DESC').all(tgId);
+}
+export function getListing(id) {
+  return db.prepare('SELECT * FROM market_listings WHERE id = ?').get(id);
+}
+export function cancelListing(id, tgId) {
+  const l = getListing(id);
+  if (!l) throw new Error('آگهی پیدا نشد');
+  if (l.seller_tg_id !== tgId) throw new Error('این آگهی مال شما نیست');
+  if (l.status !== 'active') throw new Error('این آگهی دیگر قابل لغو نیست');
+  db.prepare(`UPDATE market_listings SET status='cancelled' WHERE id=?`).run(id);
+}
+export function buyListing(listingId, buyerTgId, feePercent) {
+  const listing = getListing(listingId);
+  if (!listing) throw new Error('آگهی پیدا نشد');
+  if (listing.status !== 'active') throw new Error('این آگهی دیگر در دسترس نیست');
+  if (listing.seller_tg_id === buyerTgId) throw new Error('نمی‌تونی آگهی خودتو بخری');
+  const buyer = getUser(buyerTgId);
+  if (buyer.balance_rial < listing.price_rial) throw new Error('موجودی کیف‌پول کافی نیست');
+
+  const fee = Math.floor(listing.price_rial * (feePercent / 100));
+  const runBuy = db.transaction(() => {
+    adjustBalance(buyerTgId, 'rial', -listing.price_rial, `خرید از مارکت گیفت: ${listing.title}`, String(listingId));
+    db.prepare(`UPDATE market_listings SET status='reserved' WHERE id=?`).run(listingId);
+    return db.prepare(`INSERT INTO market_orders (listing_id, buyer_tg_id, seller_tg_id, price_rial, fee_rial) VALUES (?,?,?,?,?)`)
+      .run(listingId, buyerTgId, listing.seller_tg_id, listing.price_rial, fee).lastInsertRowid;
+  });
+  const orderId = runBuy();
+  return { orderId, listing };
+}
+export function getOrder(id) {
+  return db.prepare('SELECT * FROM market_orders WHERE id = ?').get(id);
+}
+export function myPurchases(tgId) {
+  return db.prepare(`SELECT o.*, l.title, l.image_url FROM market_orders o JOIN market_listings l ON l.id=o.listing_id WHERE o.buyer_tg_id=? ORDER BY o.created_at DESC`).all(tgId);
+}
+export function mySales(tgId) {
+  return db.prepare(`SELECT o.*, l.title, l.image_url FROM market_orders o JOIN market_listings l ON l.id=o.listing_id WHERE o.seller_tg_id=? ORDER BY o.created_at DESC`).all(tgId);
+}
+export function confirmOrderReceipt(orderId, buyerTgId) {
+  const order = getOrder(orderId);
+  if (!order) throw new Error('سفارش پیدا نشد');
+  if (order.buyer_tg_id !== buyerTgId) throw new Error('این سفارش مال شما نیست');
+  if (order.status !== 'pending_transfer') throw new Error('این سفارش قابل تایید نیست');
+  const payout = order.price_rial - order.fee_rial;
+  db.prepare(`UPDATE market_orders SET status='completed', completed_at=datetime('now') WHERE id=?`).run(orderId);
+  db.prepare(`UPDATE market_listings SET status='sold' WHERE id=?`).run(order.listing_id);
+  adjustBalance(order.seller_tg_id, 'rial', payout, 'فروش در مارکت گیفت (کارمزد کسر شد)', String(orderId));
+  return order;
+}
+export function disputeOrder(orderId, tgId) {
+  const order = getOrder(orderId);
+  if (!order) throw new Error('سفارش پیدا نشد');
+  if (order.buyer_tg_id !== tgId && order.seller_tg_id !== tgId) throw new Error('این سفارش مال شما نیست');
+  if (order.status !== 'pending_transfer') throw new Error('این سفارش قابل اعتراض نیست');
+  db.prepare(`UPDATE market_orders SET status='disputed' WHERE id=?`).run(orderId);
+  return order;
+}
+export function adminReleaseOrder(orderId) {
+  const order = getOrder(orderId);
+  if (!order) throw new Error('سفارش پیدا نشد');
+  if (!['pending_transfer', 'disputed'].includes(order.status)) throw new Error('این سفارش قابل آزادسازی نیست');
+  const payout = order.price_rial - order.fee_rial;
+  db.prepare(`UPDATE market_orders SET status='completed', completed_at=datetime('now') WHERE id=?`).run(orderId);
+  db.prepare(`UPDATE market_listings SET status='sold' WHERE id=?`).run(order.listing_id);
+  adjustBalance(order.seller_tg_id, 'rial', payout, 'فروش در مارکت گیفت (تایید ادمین)', String(orderId));
+  return order;
+}
+export function adminRefundOrder(orderId) {
+  const order = getOrder(orderId);
+  if (!order) throw new Error('سفارش پیدا نشد');
+  if (!['pending_transfer', 'disputed'].includes(order.status)) throw new Error('این سفارش قابل استرداد نیست');
+  db.prepare(`UPDATE market_orders SET status='refunded' WHERE id=?`).run(orderId);
+  db.prepare(`UPDATE market_listings SET status='active' WHERE id=?`).run(order.listing_id);
+  adjustBalance(order.buyer_tg_id, 'rial', order.price_rial, 'استرداد خرید مارکت گیفت (تایید ادمین)', String(orderId));
+  return order;
+}
+export function adminListListings() {
+  return db.prepare(`
+    SELECT l.*, u.username, u.first_name FROM market_listings l
+    JOIN users u ON u.tg_id = l.seller_tg_id ORDER BY l.created_at DESC
+  `).all();
+}
+export function adminListOrders() {
+  return db.prepare(`
+    SELECT o.*, l.title,
+      bu.username AS buyer_username, bu.first_name AS buyer_name,
+      su.username AS seller_username, su.first_name AS seller_name
+    FROM market_orders o
+    JOIN market_listings l ON l.id = o.listing_id
+    JOIN users bu ON bu.tg_id = o.buyer_tg_id
+    JOIN users su ON su.tg_id = o.seller_tg_id
+    ORDER BY o.created_at DESC
+  `).all();
+}
+export function adminSetListingStatus(id, status) {
+  db.prepare(`UPDATE market_listings SET status=? WHERE id=?`).run(status, id);
 }
 
 export default db;
