@@ -473,6 +473,11 @@
           <div class="li-text">تسک‌ها و جایزه‌ها</div>
           <div class="chev">‹</div>
         </div>
+        <div class="list-row" onclick="goTo('giftmarket')">
+          <div class="li-icon">🎁</div>
+          <div class="li-text">بازار گیفت کاربران</div>
+          <div class="chev">‹</div>
+        </div>
         <div class="list-row" onclick="goTo('referral')">
           <div class="li-icon">🤝</div>
           <div class="li-text">زیرمجموعه‌گیری</div>
@@ -557,23 +562,20 @@
       </div>
     </section>
 
-    <!-- ============ MARKET (P2P GIFT) ============ -->
-    <section class="page" id="page-market">
-      <div class="sec-title" style="margin-top:4px;"><h2>🎁 بازار گیفت</h2></div>
-      <div class="hero" style="padding:20px 18px;">
-        <h1 style="font-size:16px;">گیفت پروفایلتو بفروش، یا از بقیه بخر</h1>
-        <p style="margin:0;">آگهی بذار، خریدار با موجودی کیف‌پول پرداخت می‌کنه، تو مستقیم توی تلگرام گیفت رو براش می‌فرستی و بعد از تاییدش پول به کیف‌پولت واریز می‌شه.</p>
-        <button class="hero-cta" style="margin-top:12px;" onclick="openListingForm()">➕ ثبت آگهی فروش گیفت</button>
+    <!-- ============ GIFT MARKET (P2P) ============ -->
+    <section class="page" id="page-giftmarket">
+      <div class="sec-title" style="margin-top:4px;">
+        <h2>🎁 بازار گیفت کاربران</h2>
+        <span class="more" style="color:var(--violet); font-weight:800; cursor:pointer;" onclick="openAddListing()">+ افزودن آگهی</span>
       </div>
-
-      <div class="chips" style="margin-top:14px;">
-        <button class="chip market-subtab active" data-mt="browse" onclick="setMarketTab('browse')">🛍 آگهی‌های فعال</button>
-        <button class="chip market-subtab" data-mt="mine" onclick="setMarketTab('mine')">📋 آگهی‌های من</button>
-        <button class="chip market-subtab" data-mt="purchases" onclick="setMarketTab('purchases')">🧾 خریدهای من</button>
-        <button class="chip market-subtab" data-mt="sales" onclick="setMarketTab('sales')">💰 فروش‌های من</button>
+      <div style="font-size:10.5px; color:var(--text-2); margin-bottom:12px; line-height:1.8;">
+        اینجا گیفت‌های واقعی تلگرامتو می‌تونی بفروشی. پول خریدار امانت می‌مونه تا خودش تایید کنه گیفت رو گرفته، بعد آزاد می‌شه به تو.
       </div>
-
-      <div id="market-content"><div class="empty"><p>در حال بارگذاری…</p></div></div>
+      <div class="chips" style="margin-bottom:14px;">
+        <button class="chip active" id="gm-tab-market" onclick="switchGiftMarketTab('market')">🛍 بازار</button>
+        <button class="chip" id="gm-tab-mine" onclick="switchGiftMarketTab('mine')">🎒 معاملات من</button>
+      </div>
+      <div id="gm-content"></div>
     </section>
 
   </main>
@@ -601,10 +603,6 @@
       <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 3"/></svg>
       بازی‌ها
       <span class="dot" id="wheel-dot"></span>
-    </button>
-    <button class="tab" data-tab="market" onclick="goTo('market')">
-      <svg viewBox="0 0 24 24"><path d="M4 8l1.5-4h13L20 8"/><path d="M4 8h16v11a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V8Z"/><path d="M9 12a3 3 0 0 0 6 0"/></svg>
-      بازار گیفت
     </button>
     <button class="tab" data-tab="profile" onclick="goTo('profile')">
       <svg viewBox="0 0 24 24"><circle cx="12" cy="8" r="3.4"/><path d="M4.5 20c0-4 3.4-6.5 7.5-6.5s7.5 2.5 7.5 6.5"/></svg>
@@ -653,41 +651,41 @@
         <div class="pi">💳</div><div class="pt"><div class="n">کارت‌به‌کارت</div><div class="s">تایید دستی طی چند دقیقه</div></div><div class="radio"></div>
       </div>
     </div>
+    <div id="card-info-box" style="display:none; background:var(--surface-2); border:1px dashed var(--border); border-radius:12px; padding:12px; margin-bottom:14px;">
+      <div style="font-size:11px; color:var(--text-2); margin-bottom:6px;">مبلغ رو به این شماره کارت واریز کن:</div>
+      <div style="display:flex; align-items:center; gap:8px; margin-bottom:10px;">
+        <span id="card-number-display" style="direction:ltr; font-weight:800; font-size:14px; flex:1;">—</span>
+        <button class="copy-btn" onclick="copyCardNumber()">کپی</button>
+      </div>
+      <div style="font-size:11px; color:var(--text-2); margin-bottom:10px;" id="card-owner-display"></div>
+      <input class="input-box" id="card-tracking-input" placeholder="کد رهگیری یا ۴ رقم آخر کارتت رو بنویس" style="margin-bottom:0;">
+    </div>
     <button class="btn-main" id="topup-confirm-btn" onclick="confirmTopup()">پرداخت و شارژ</button>
-  </div>
-</div>
-
-<!-- ===== CARD-TO-CARD TOPUP SHEET ===== -->
-<div class="overlay" id="overlay-cardtopup" onclick="if(event.target===this) closeSheet('overlay-cardtopup')">
-  <div class="sheet">
-    <div class="sheet-handle"></div>
-    <div class="sheet-title">واریز کارت‌به‌کارت <span class="x" onclick="closeSheet('overlay-cardtopup')">✕</span></div>
-    <div id="cardtopup-info" style="background:var(--surface-2); border:1px solid var(--border); border-radius:12px; padding:14px; margin-bottom:14px;"></div>
-    <div style="font-size:11.5px; color:var(--text-2); margin-bottom:10px; font-weight:600;">مبلغ رو به شماره کارت بالا واریز کن، بعد اطلاعات زیر رو وارد کن:</div>
-    <input class="input-box" id="ct-trackcode" placeholder="کد رهگیری / پیگیری تراکنش (اجباری)">
-    <input class="input-box" id="ct-last4" placeholder="۴ رقم آخر کارت مبدأ (اختیاری)" maxlength="4" inputmode="numeric">
-    <input class="input-box" id="ct-note" placeholder="توضیح اضافه (اختیاری)">
-    <button class="btn-main" onclick="submitCardTopup()">ثبت درخواست شارژ</button>
-    <div style="font-size:10.5px; color:var(--text-2); text-align:center; margin-top:10px;">بعد از ثبت، درخواستت رو ادمین بررسی می‌کنه و طی چند دقیقه کیف‌پولت شارژ می‌شه.</div>
-  </div>
-</div>
-
-<!-- ===== NEW MARKET LISTING SHEET ===== -->
-<div class="overlay" id="overlay-listing" onclick="if(event.target===this) closeSheet('overlay-listing')">
-  <div class="sheet">
-    <div class="sheet-handle"></div>
-    <div class="sheet-title">ثبت آگهی فروش گیفت <span class="x" onclick="closeSheet('overlay-listing')">✕</span></div>
-    <input class="input-box" id="lf-title" placeholder="نام گیفت (مثلاً گیفت الماس 💎)">
-    <input class="input-box" id="lf-desc" placeholder="توضیح یا شماره/کد گیفت (اختیاری)">
-    <input class="input-box" id="lf-price" placeholder="قیمت به تومان" inputmode="numeric">
-    <input class="input-box" id="lf-image" placeholder="لینک تصویر گیفت (اختیاری)">
-    <button class="btn-main" onclick="submitListing()">ثبت آگهی</button>
   </div>
 </div>
 
 <div id="toast"></div>
 
-<!-- ===== STAKE SHEET ===== -->
+<!-- ===== ADD GIFT LISTING SHEET ===== -->
+<div class="overlay" id="overlay-list-gift" onclick="if(event.target===this) closeSheet('overlay-list-gift')">
+  <div class="sheet">
+    <div class="sheet-handle"></div>
+    <div class="sheet-title">افزودن آگهی گیفت <span class="x" onclick="closeSheet('overlay-list-gift')">✕</span></div>
+    <div class="field" style="text-align:right; margin-bottom:14px;">
+      <label style="font-size:11.5px; color:var(--text-1); font-weight:600; display:block; margin-bottom:6px;">اسم گیفت</label>
+      <input class="input-box" id="list-gift-title" placeholder="مثلاً: Diamond Ring" style="margin-bottom:0;">
+    </div>
+    <div class="field" style="text-align:right; margin-bottom:14px;">
+      <label style="font-size:11.5px; color:var(--text-1); font-weight:600; display:block; margin-bottom:6px;">لینک عکس (اختیاری)</label>
+      <input class="input-box" id="list-gift-image" placeholder="https://…" style="margin-bottom:0;">
+    </div>
+    <div class="field" style="text-align:right; margin-bottom:6px;">
+      <label style="font-size:11.5px; color:var(--text-1); font-weight:600; display:block; margin-bottom:6px;">قیمت (تومان)</label>
+      <input class="input-box" id="list-gift-price" placeholder="قیمت به تومان…" inputmode="numeric">
+    </div>
+    <button class="btn-main" onclick="confirmListGift()">ثبت آگهی</button>
+  </div>
+</div>
 <div class="overlay" id="overlay-stake" onclick="if(event.target===this) closeSheet('overlay-stake')">
   <div class="sheet">
     <div class="sheet-handle"></div>
@@ -842,7 +840,7 @@ function goTo(page){
   if(page==='staking') renderStaking();
   if(page==='tasks') renderTasksPage();
   if(page==='games') renderGames();
-  if(page==='market') renderMarketTab();
+  if(page==='giftmarket') { gmTab='market'; switchGiftMarketTab('market'); }
   window.scrollTo(0,0);
   haptic('light');
 }
@@ -1031,68 +1029,44 @@ function selectTopupMethod(m){
   document.querySelectorAll('#topup-method-wrap .pay-option').forEach(el=>{
     el.classList.toggle('sel', el.dataset.m===m);
   });
+  const box = document.getElementById('card-info-box');
+  if (m === 'card') {
+    box.style.display = 'block';
+    document.getElementById('card-number-display').textContent = state.config?.cardNumber || 'هنوز تنظیم نشده — به پشتیبانی پیام بده';
+    document.getElementById('card-owner-display').textContent = state.config?.cardOwner ? 'به نام: ' + state.config.cardOwner : '';
+  } else {
+    box.style.display = 'none';
+  }
+}
+function copyCardNumber(){
+  const num = document.getElementById('card-number-display').textContent;
+  if (navigator.clipboard) navigator.clipboard.writeText(num).catch(()=>{});
+  haptic('medium');
+  showToast('📋 شماره کارت کپی شد');
 }
 async function confirmTopup(){
   const amt = state.topup.amount;
   if(!amt || amt<=0){ showToast('❌ لطفاً مبلغ را وارد کن'); return; }
   const amountRial = state.topup.mode === 'stars' ? amt * 385 : amt;
 
-  // روش کارت‌به‌کارت فقط برای شارژ ریالی کیف‌پول در دسترسه (خرید استارز همیشه از درگاهه)
-  if (state.topup.mode !== 'stars' && state.topup.method === 'card') {
-    closeSheet('overlay-topup');
-    openCardTopupSheet(amountRial);
+  if (state.topup.method === 'card') {
+    const trackingCode = document.getElementById('card-tracking-input').value.trim();
+    if (!trackingCode) { showToast('❌ کد رهگیری یا ۴ رقم آخر کارتت رو بنویس'); return; }
+    try {
+      await api('/api/wallet/card-topup', { method:'POST', body: JSON.stringify({ amount: amountRial, trackingCode }) });
+      closeSheet('overlay-topup');
+      haptic('heavy');
+      showToast('✅ درخواستت ثبت شد، تا چند دقیقه دیگه بررسی و تایید می‌شه');
+    } catch (e) { showToast('❌ ' + e.message); }
     return;
   }
 
   try {
-    // شارژ از درگاه: موجودی فقط بعد از تایید واقعی پرداخت در callback سرور اضافه می‌شود، نه همین‌جا.
+    // درگاه بانکی واقعی؛ موجودی فقط بعد از تایید واقعی پرداخت در callback سرور اضافه می‌شود
     const { payUrl } = await api('/api/gateway/start', { method:'POST', body: JSON.stringify({ purpose:'topup', amountRial }) });
     closeSheet('overlay-topup');
     if (tg && tg.openLink) tg.openLink(payUrl); else window.open(payUrl, '_blank');
     showToast('🔗 در حال انتقال به درگاه پرداخت…');
-  } catch (e) {
-    showToast('❌ ' + e.message);
-  }
-}
-
-/* ===================== CARD-TO-CARD TOPUP ===================== */
-let cardTopupAmount = 0;
-async function openCardTopupSheet(amountRial){
-  cardTopupAmount = amountRial;
-  document.getElementById('ct-trackcode').value = '';
-  document.getElementById('ct-last4').value = '';
-  document.getElementById('ct-note').value = '';
-  document.getElementById('cardtopup-info').innerHTML = `<div style="text-align:center; color:var(--text-2); font-size:12px;">در حال دریافت شماره کارت…</div>`;
-  openSheet('overlay-cardtopup');
-  try {
-    const { cardNumber, cardHolder } = await api('/api/topup/card-info');
-    if (!cardNumber) {
-      document.getElementById('cardtopup-info').innerHTML = `<div style="text-align:center; color:var(--danger); font-size:12px;">شماره کارت هنوز تنظیم نشده، از پشتیبانی بپرس.</div>`;
-      return;
-    }
-    document.getElementById('cardtopup-info').innerHTML = `
-      <div style="font-size:11px; color:var(--text-2); margin-bottom:6px;">مبلغ قابل واریز</div>
-      <div style="font-size:17px; font-weight:900; color:var(--gold-1); margin-bottom:12px;">${fmt(amountRial)} تومان</div>
-      <div style="font-size:11px; color:var(--text-2); margin-bottom:4px;">شماره کارت مقصد</div>
-      <div style="display:flex; align-items:center; justify-content:space-between; gap:8px;">
-        <span style="font-size:15px; font-weight:800; direction:ltr;">${cardNumber}</span>
-        <button class="copy-btn" onclick="navigator.clipboard.writeText('${cardNumber}'); showToast('📋 شماره کارت کپی شد')">کپی</button>
-      </div>
-      ${cardHolder ? `<div style="font-size:11.5px; color:var(--text-1); margin-top:6px;">به نام: ${cardHolder}</div>` : ''}
-    `;
-  } catch (e) {
-    document.getElementById('cardtopup-info').innerHTML = `<div style="text-align:center; color:var(--danger); font-size:12px;">خطا در دریافت اطلاعات کارت</div>`;
-  }
-}
-async function submitCardTopup(){
-  const trackCode = document.getElementById('ct-trackcode').value.trim();
-  const cardLast4 = document.getElementById('ct-last4').value.trim();
-  const note = document.getElementById('ct-note').value.trim();
-  if(!trackCode){ showToast('❌ کد رهگیری تراکنش را وارد کن'); return; }
-  try {
-    await api('/api/topup/card-request', { method:'POST', body: JSON.stringify({ amountRial: cardTopupAmount, trackCode, cardLast4, note }) });
-    closeSheet('overlay-cardtopup');
-    showToast('✅ درخواست ثبت شد، منتظر تایید ادمین باش');
   } catch (e) {
     showToast('❌ ' + e.message);
   }
@@ -1144,7 +1118,7 @@ async function renderReferral(){
   try {
     const r = await api('/api/referral');
     state.referral = r;
-    document.getElementById('ref-link').textContent = `t.me/${(window.BOT_USERNAME||'starkadeh_bot')}?start=${r.ref_code}`;
+    document.getElementById('ref-link').textContent = `t.me/${state.config?.botUsername || '...'}?start=${r.ref_code}`;
     document.getElementById('ref-count').textContent = r.invited_count;
     document.getElementById('ref-earn').textContent = fmt(r.total_earned);
     document.getElementById('ref-list').innerHTML = r.invited.length ? r.invited.map(i=>`
@@ -1285,125 +1259,101 @@ function openCommunityLink(type){
   window.open('https://t.me/' + link.replace('@',''), '_blank');
 }
 
-/* ===================== MARKET (P2P GIFT) ===================== */
-let marketTab = 'browse';
-function setMarketTab(t){
-  marketTab = t;
-  document.querySelectorAll('.market-subtab').forEach(el => el.classList.toggle('active', el.dataset.mt === t));
-  renderMarketTab();
-  haptic('light');
+/* ===================== GIFT MARKET (P2P, escrow-based) ===================== */
+let gmTab = 'market';
+function switchGiftMarketTab(tab){
+  gmTab = tab;
+  document.getElementById('gm-tab-market').classList.toggle('active', tab==='market');
+  document.getElementById('gm-tab-mine').classList.toggle('active', tab==='mine');
+  tab==='market' ? renderGiftMarket() : renderMyListings();
 }
-async function renderMarketTab(){
-  const wrap = document.getElementById('market-content');
+async function renderGiftMarket(){
+  const wrap = document.getElementById('gm-content');
   wrap.innerHTML = `<div class="empty"><p>در حال بارگذاری…</p></div>`;
   try {
-    if (marketTab === 'browse') return renderMarketBrowse(wrap);
-    if (marketTab === 'mine') return renderMarketMine(wrap);
-    if (marketTab === 'purchases') return renderMarketPurchases(wrap);
-    if (marketTab === 'sales') return renderMarketSales(wrap);
+    const { listings, feePercent } = await api('/api/gifts/market');
+    wrap.innerHTML = listings.length ? `
+      <div style="font-size:10.5px; color:var(--text-2); margin-bottom:10px;">کارمزد پلتفرم روی هر فروش: ${feePercent}٪ — پولت تا وقتی گیفت رو نگیری آزاد نمی‌شه</div>
+      <div class="grid">
+        ${listings.map(g => `
+          <div class="pcard">
+            ${g.image_url ? `<img src="${g.image_url}" style="width:100%; height:74px; object-fit:cover; border-radius:10px;">` : `<div class="picon">🎁</div>`}
+            <div class="pname">${g.title}</div>
+            <div class="pdesc">فروشنده: ${g.first_name||'کاربر'}${g.username?' @'+g.username:''}</div>
+            <div class="prow">
+              <div class="price">${fmt(g.price_rial)}<small> ت</small></div>
+              <button class="addbtn" onclick="buyMarketGift(${g.id})">🛒</button>
+            </div>
+          </div>
+        `).join('')}
+      </div>
+    ` : `<div class="empty"><div class="e-icon">🎁</div><p>فعلاً آگهی‌ای تو بازار نیست</p></div>`;
   } catch (e) { showToast('❌ ' + e.message); }
 }
-async function renderMarketBrowse(wrap){
-  const rows = await api('/api/market/listings');
-  if (!rows.length) { wrap.innerHTML = `<div class="empty"><div class="e-icon">🎁</div><p>فعلاً آگهی فعالی نیست</p></div>`; return; }
-  wrap.innerHTML = `<div class="grid">${rows.map(l => `
-    <div class="pcard">
-      ${l.image_url ? `<img src="${l.image_url}" style="width:100%; height:74px; object-fit:cover; border-radius:10px; margin-bottom:2px;" onerror="this.style.display='none'">` : `<div class="picon">🎁</div>`}
-      <div class="pname">${l.title}</div>
-      <div class="pdesc">فروشنده: ${l.first_name || 'کاربر'}${l.username ? ' @' + l.username : ''}</div>
-      <div class="prow">
-        <div class="price">${fmt(l.price_rial)}<small> ت</small></div>
-        <button class="addbtn" onclick="buyMarketListing(${l.id})">خرید</button>
-      </div>
-    </div>
-  `).join('')}</div>`;
-}
-async function renderMarketMine(wrap){
-  const rows = await api('/api/market/my-listings');
-  if (!rows.length) { wrap.innerHTML = `<div class="empty"><div class="e-icon">📋</div><p>هنوز آگهی‌ای ثبت نکردی</p></div>`; return; }
-  wrap.innerHTML = `<div class="list-card">${rows.map(l => `
-    <div class="list-row" style="cursor:default;">
-      <div class="li-icon">🎁</div>
-      <div class="li-text">${l.title}<div style="font-size:10.5px; color:var(--text-2);">${fmt(l.price_rial)} تومان — ${listingStatusFa(l.status)}</div></div>
-      ${l.status === 'active' ? `<button class="btn-ghost" style="max-width:90px; padding:6px 10px; font-size:11px;" onclick="cancelMyListing(${l.id})">لغو</button>` : ''}
-    </div>
-  `).join('')}</div>`;
-}
-async function renderMarketPurchases(wrap){
-  const rows = await api('/api/market/my-purchases');
-  if (!rows.length) { wrap.innerHTML = `<div class="empty"><div class="e-icon">🧾</div><p>هنوز خریدی از بازار نداشتی</p></div>`; return; }
-  wrap.innerHTML = `<div class="list-card">${rows.map(o => `
-    <div class="list-row" style="cursor:default; align-items:flex-start;">
-      <div class="li-icon">🎁</div>
-      <div class="li-text">${o.title}<div style="font-size:10.5px; color:var(--text-2);">${fmt(o.price_rial)} تومان — ${orderStatusFa(o.status)}</div>
-        ${o.status === 'pending_transfer' ? `
-          <div style="display:flex; gap:8px; margin-top:8px;">
-            <button class="wbtn primary" style="padding:8px 12px; font-size:11px;" onclick="confirmMarketReceipt(${o.id})">✅ گیفت رو گرفتم</button>
-            <button class="wbtn" style="padding:8px 12px; font-size:11px;" onclick="disputeMarketOrder(${o.id})">⚠️ مشکل دارم</button>
-          </div>` : ''}
-      </div>
-    </div>
-  `).join('')}</div>`;
-}
-async function renderMarketSales(wrap){
-  const rows = await api('/api/market/my-sales');
-  if (!rows.length) { wrap.innerHTML = `<div class="empty"><div class="e-icon">💰</div><p>هنوز فروشی نداشتی</p></div>`; return; }
-  wrap.innerHTML = `<div class="list-card">${rows.map(o => `
-    <div class="list-row" style="cursor:default;">
-      <div class="li-icon">💰</div>
-      <div class="li-text">${o.title}<div style="font-size:10.5px; color:var(--text-2);">${fmt(o.price_rial - o.fee_rial)} تومان (بعد از کارمزد) — ${orderStatusFa(o.status)}</div>
-        ${o.status === 'pending_transfer' ? `<div style="font-size:10.5px; color:var(--gold-1); margin-top:4px;">گیفت رو توی تلگرام برای خریدار بفرست</div>` : ''}
-      </div>
-    </div>
-  `).join('')}</div>`;
-}
-function listingStatusFa(s){ return {active:'فعال', reserved:'در حال خرید', sold:'فروخته شده', cancelled:'لغو شده'}[s] || s; }
-function orderStatusFa(s){ return {pending_transfer:'منتظر ارسال گیفت', completed:'تکمیل شده', disputed:'در حال بررسی اعتراض', refunded:'مبلغ مسترد شد', cancelled:'لغو شده'}[s] || s; }
-
-function openListingForm(){
-  document.getElementById('lf-title').value = '';
-  document.getElementById('lf-desc').value = '';
-  document.getElementById('lf-price').value = '';
-  document.getElementById('lf-image').value = '';
-  openSheet('overlay-listing');
-}
-async function submitListing(){
-  const title = document.getElementById('lf-title').value.trim();
-  const description = document.getElementById('lf-desc').value.trim();
-  const priceRial = parseInt(document.getElementById('lf-price').value.replace(/[^\d]/g, '')) || 0;
-  const imageUrl = document.getElementById('lf-image').value.trim();
-  if (!title) { showToast('❌ نام گیفت را وارد کن'); return; }
-  if (!priceRial || priceRial < 1000) { showToast('❌ قیمت معتبر وارد کن'); return; }
+async function buyMarketGift(id){
+  if (!confirm('با خرید، مبلغ از کیف‌پولت کم و امانت می‌مونه تا فروشنده گیفت رو برات بفرسته و تو تاییدش کنی. ادامه بدم؟')) return;
   try {
-    await api('/api/market/listings', { method:'POST', body: JSON.stringify({ title, description, priceRial, imageUrl }) });
-    closeSheet('overlay-listing');
-    showToast('✅ آگهی ثبت شد');
-    setMarketTab('mine');
-  } catch (e) { showToast('❌ ' + e.message); }
-}
-async function buyMarketListing(id){
-  if (!confirm('مبلغ آگهی از کیف‌پولت کسر می‌شه تا فروشنده گیفت رو برات بفرسته. ادامه بدم؟')) return;
-  try {
-    await api(`/api/market/listings/${id}/buy`, { method:'POST' });
+    await api(`/api/gifts/${id}/buy`, { method:'POST' });
     await refreshMe();
-    showToast('✅ خرید ثبت شد، منتظر ارسال گیفت از فروشنده باش');
-    setMarketTab('purchases');
+    await renderGiftMarket();
+    haptic('heavy');
+    showToast('✅ رزرو شد! منتظر بمون فروشنده گیفت رو تو تلگرام برات بفرسته');
   } catch (e) { showToast('❌ ' + e.message); }
 }
-async function cancelMyListing(id){
-  if (!confirm('این آگهی لغو بشه؟')) return;
-  try { await api(`/api/market/listings/${id}`, { method:'DELETE' }); showToast('🗑 آگهی لغو شد'); renderMarketTab(); }
+async function renderMyListings(){
+  const wrap = document.getElementById('gm-content');
+  wrap.innerHTML = `<div class="empty"><p>در حال بارگذاری…</p></div>`;
+  const statusLabel = {listed:'در بازار', reserved:'رزرو‌شده — منتظر ارسال/تایید', completed:'تکمیل‌شده ✅', cancelled:'لغوشده'};
+  try {
+    const rows = await api('/api/gifts/my');
+    wrap.innerHTML = rows.length ? rows.map(g => {
+      const iAmSeller = g.seller_tg_id === state.user.id;
+      return `
+      <div class="pcard" style="width:100%; flex-direction:row; align-items:center; gap:12px; margin-bottom:10px;">
+        ${g.image_url ? `<img src="${g.image_url}" style="width:52px; height:52px; object-fit:cover; border-radius:10px; flex-shrink:0;">` : `<div class="picon">🎁</div>`}
+        <div style="flex:1;">
+          <div class="pname">${g.title}</div>
+          <div class="pdesc">${iAmSeller ? 'فروشنده تو هستی' : 'خریدار تو هستی'} — ${statusLabel[g.status]}</div>
+          <div class="price" style="margin-top:4px;">${fmt(g.price_rial)} ت</div>
+        </div>
+        ${iAmSeller && g.status==='listed' ? `<button class="addbtn" style="width:auto; padding:0 12px; background:var(--danger);" onclick="cancelGiftListing(${g.id})">لغو</button>` : ''}
+        ${!iAmSeller && g.status==='reserved' ? `<button class="addbtn" style="width:auto; padding:0 12px;" onclick="confirmGiftReceived(${g.id})">گرفتم ✅</button>` : ''}
+      </div>`;
+    }).join('') : `<div class="empty"><div class="e-icon">🎒</div><p>هنوز آگهی یا خریدی نداری</p></div>`;
+  } catch (e) { showToast('❌ ' + e.message); }
+}
+async function cancelGiftListing(id){
+  try { await api(`/api/gifts/${id}/cancel`, { method:'POST' }); await renderMyListings(); showToast('آگهی لغو شد'); }
   catch (e) { showToast('❌ ' + e.message); }
 }
-async function confirmMarketReceipt(id){
-  if (!confirm('گیفت رو توی تلگرام دریافت کردی؟ با تایید، پول به فروشنده واریز می‌شه.')) return;
-  try { await api(`/api/market/orders/${id}/confirm`, { method:'POST' }); haptic('heavy'); showToast('✅ تایید شد، مبلغ برای فروشنده آزاد شد'); renderMarketTab(); }
-  catch (e) { showToast('❌ ' + e.message); }
+async function confirmGiftReceived(id){
+  if (!confirm('مطمئنی گیفت رو تو تلگرام گرفتی؟ با تایید، پول به فروشنده آزاد می‌شه و برگشتی نداره.')) return;
+  try {
+    await api(`/api/gifts/${id}/confirm-received`, { method:'POST' });
+    await renderMyListings();
+    haptic('heavy');
+    showToast('✅ تایید شد، پول به فروشنده واریز شد');
+  } catch (e) { showToast('❌ ' + e.message); }
 }
-async function disputeMarketOrder(id){
-  if (!confirm('این سفارش برای بررسی به پشتیبانی ارجاع بشه؟')) return;
-  try { await api(`/api/market/orders/${id}/dispute`, { method:'POST' }); showToast('⚠️ اعتراض ثبت شد، پشتیبانی بررسی می‌کنه'); renderMarketTab(); }
-  catch (e) { showToast('❌ ' + e.message); }
+function openAddListing(){
+  document.getElementById('list-gift-title').value = '';
+  document.getElementById('list-gift-image').value = '';
+  document.getElementById('list-gift-price').value = '';
+  openSheet('overlay-list-gift');
+}
+async function confirmListGift(){
+  const title = document.getElementById('list-gift-title').value.trim();
+  const image_url = document.getElementById('list-gift-image').value.trim();
+  const price = Number(document.getElementById('list-gift-price').value.replace(/[^\d]/g,''));
+  if (!title) { showToast('❌ اسم گیفت رو بنویس'); return; }
+  if (!price || price < 5000) { showToast('❌ قیمت معتبر وارد کن'); return; }
+  try {
+    await api('/api/gifts/list', { method:'POST', body: JSON.stringify({ title, image_url, price }) });
+    closeSheet('overlay-list-gift');
+    await renderMyListings();
+    haptic('heavy');
+    showToast('✅ آگهی ثبت شد');
+  } catch (e) { showToast('❌ ' + e.message); }
 }
 
 /* ===================== TOAST ===================== */
