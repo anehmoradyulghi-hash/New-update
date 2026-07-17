@@ -1,16 +1,16 @@
 import crypto from 'crypto';
 
 const BOT_TOKEN = process.env.BOT_TOKEN;
-const API = https://api.telegram.org/bot${BOT_TOKEN};
+const API = `https://api.telegram.org/bot${BOT_TOKEN}`;
 
 async function call(method, payload) {
-  const res = await fetch(${API}/${method}, {
+  const res = await fetch(`${API}/${method}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
   });
   const data = await res.json();
-  if (!data.ok) console.error([telegram:${method}], data);
+  if (!data.ok) console.error(`[telegram:${method}]`, data);
   return data;
 }
 
@@ -24,7 +24,7 @@ export const answerCallbackQuery = (id, text) =>
   call('answerCallbackQuery', { callback_query_id: id, ...(text ? { text } : {}) });
 
 // Creates a Telegram Stars invoice link. Currency MUST be "XTR" for Stars, provider_token stays empty.
-// prices: array of {label, amount} — one line per cart item; Telegram sums them automatically.
+// `prices`: array of {label, amount} — one line per cart item; Telegram sums them automatically.
 export async function createStarsInvoiceLink({ title, description, payload, prices }) {
   const data = await call('createInvoiceLink', {
     title,
@@ -48,7 +48,9 @@ export async function isChannelMember(channelUsername, userId) {
   return !['left', 'kicked'].includes(data.result.status);
 }
 
-// ---- Validates the initData string the Mini App sends with every API request ----
+export const getMe = () => call('getMe', {});
+
+// ---- Validates the `initData` string the Mini App sends with every API request ----
 // Docs: https://core.telegram.org/bots/webapps#validating-data-received-via-the-mini-app
 export function validateInitData(initData, botToken) {
   const params = new URLSearchParams(initData);
@@ -57,7 +59,7 @@ export function validateInitData(initData, botToken) {
 
   const dataCheckString = [...params.entries()]
     .sort(([a], [b]) => a.localeCompare(b))
-    .map(([k, v]) => ${k}=${v})
+    .map(([k, v]) => `${k}=${v}`)
     .join('\n');
 
   const secretKey = crypto.createHmac('sha256', 'WebAppData').update(botToken).digest();
