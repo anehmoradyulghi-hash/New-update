@@ -1,6 +1,10 @@
 import express from 'express';
 import crypto from 'crypto';
-import db, { adjustBalance } from './db.js';
+import db, {
+  adjustBalance,
+  listCardTopups, approveCardTopup, rejectCardTopup,
+  adminListListings, adminListOrders, adminReleaseOrder, adminRefundOrder, adminSetListingStatus,
+} from './db.js';
 import { sendMessage } from './telegram.js';
 
 const router = express.Router();
@@ -210,6 +214,54 @@ router.patch('/tasks/:id', (req, res) => {
 router.delete('/tasks/:id', (req, res) => {
   db.prepare('DELETE FROM tasks WHERE id = ?').run(req.params.id);
   res.json({ ok: true });
+});
+
+/* =========================================================================
+   CARD-TO-CARD TOP-UPS — تایید/رد درخواست‌های شارژ کارت‌به‌کارت
+   ========================================================================= */
+router.get('/card-topups', (req, res) => {
+  const { status = '' } = req.query;
+  res.json(listCardTopups(status || null));
+});
+router.post('/card-topups/:id/approve', (req, res) => {
+  try {
+    const row = approveCardTopup(Number(req.params.id));
+    sendMessage(row.tg_id, `✅ درخواست شارژ کارت‌به‌کارت شما تایید شد.\nمبلغ ${row.amount_rial.toLocaleString()} تومان به کیف‌پولت اضافه شد.`).catch(() => {});
+    res.json({ ok: true });
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
+router.post('/card-topups/:id/reject', (req, res) => {
+  try {
+    const row = rejectCardTopup(Number(req.params.id), req.body?.note);
+    sendMessage(row.tg_id, `❌ درخواست شارژ کارت‌به‌کارت شما رد شد.${req.body?.note ? `\nدلیل: ${req.body.note}` : ''}`).catch(() => {});
+    res.json({ ok: true });
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
+
+/* =========================================================================
+   MARKETPLACE — نظارت بر آگهی‌ها و سفارش‌های مارکت گیفت (پی‌توپی)
+   ========================================================================= */
+router.get('/market/listings', (req, res) => res.json(adminListListings()));
+router.patch('/market/listings/:id', (req, res) => {
+  const { status } = req.body;
+  if (!['active', 'reserved', 'sold', 'cancelled'].includes(status)) return res.status(400).json({ error: 'وضعیت نامعتبر' });
+  adminSetListingStatus(Number(req.params.id), status);
+  res.json({ ok: true });
+});
+router.get('/market/orders', (req, res) => res.json(adminListOrders()));
+router.post('/market/orders/:id/release', (req, res) => {
+  try {
+    const order = adminReleaseOrder(Number(req.params.id));
+    sendMessage(order.seller_tg_id, `✅ ادمین سفارش #${order.id} رو تایید کرد.\nمبلغ ${(order.price_rial - order.fee_rial).toLocaleString()} تومان به کیف‌پولت واریز شد.`).catch(() => {});
+    res.json({ ok: true });
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
+router.post('/market/orders/:id/refund', (req, res) => {
+  try {
+    const order = adminRefundOrder(Number(req.params.id));
+    sendMessage(order.buyer_tg_id, `↩️ سفارش #${order.id} توسط ادمین لغو شد و مبلغ ${order.price_rial.toLocaleString()} تومان به کیف‌پولت برگشت.`).catch(() => {});
+    res.json({ ok: true });
+  } catch (e) { res.status(400).json({ error: e.message }); }
 });
 
 export default router;
