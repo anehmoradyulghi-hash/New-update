@@ -1,13 +1,15 @@
 import 'dotenv/config';
 import express from 'express';
 import {
-  sendMessage, answerPreCheckoutQuery, createStarsInvoiceLink,
-  setWebhook, validateInitData,
+  sendMessage, answerPreCheckoutQuery, answerCallbackQuery, createStarsInvoiceLink,
+  setWebhook, validateInitData, isChannelMember,
 } from './telegram.js';
 import { requestPayment, verifyPayment } from './gateway.js';
 import db, {
   getOrCreateUser, getUser, adjustBalance, payReferralCommission,
   createOrder, getProduct,
+  settleStake, pendingStakeReward, stakeDeposit, stakeWithdraw,
+  listActiveTasks, isTaskDone, completeTask,
 } from './db.js';
 import adminRouter from './admin.js';
 
@@ -15,6 +17,14 @@ const app = express();
 app.use(express.json());
 
 app.get('/', (req, res) => res.send('✅ starkadeh backend is running'));
+
+// لینک‌های عمومی کانال/چت که مینی‌اپ برای دکمه‌های صفحه بازی‌ها ازش استفاده می‌کنه
+app.get('/api/config', (req, res) => {
+  res.json({
+    channel: process.env.REQUIRED_CHANNEL || process.env.COMMUNITY_CHANNEL || null,
+    chat: process.env.COMMUNITY_CHAT || null,
+  });
+});
 
 const ADMIN_IDS = (process.env.ADMIN_IDS || '').split(',').map(s => s.trim()).filter(Boolean).map(Number);
 const isAdmin = (id) => ADMIN_IDS.includes(Number(id));
@@ -24,7 +34,7 @@ const isAdmin = (id) => ADMIN_IDS.includes(Number(id));
    Telegram initData string in the "X-Init-Data" header. This is how we
    know WHO is calling us without any separate login system.
    ========================================================================= */
-function requireTelegramAuth(req, res, next) {
+async function requireTelegramAuth(req, res, next) {
   const initData = req.headers['x-init-data'];
   if (!initData) return res.status(401).json({ error: 'no init data' });
   const tgUser = validateInitData(initData, process.env.BOT_TOKEN);
@@ -33,6 +43,14 @@ function requireTelegramAuth(req, res, next) {
   const params = new URLSearchParams(initData);
   const startParam = params.get('start_param'); // carries ref_XXXXX if opened via referral link
   req.dbUser = getOrCreateUser(tgUser, startParam);
+
+  // جوین اجباری کانال (اگه تو Variables تنظیم شده باشه)
+  if (process.env.REQUIRED_CHANNEL) {
+    const joined = await isChannelMember(process.env.REQUIRED_CHANNEL, tgUser.id);
+    if (!joined) {
+      return res.status(403).json({ error: 'join_required', channel: process.env.REQUIRED_CHANNEL });
+    }
+  }
   next();
 }
 
@@ -72,9 +90,9 @@ function priceCart(items) {
   return { total, resolved };
 }
 
-// checkout: pay with wallet balance (rial) — items: [{productId, qty}]
+// checkout: pay with wallet balance (rial) — items: [{productId, qty}], note: آیدی گیرنده/اکانت مقصد
 app.post('/api/checkout/wallet', requireTelegramAuth, (req, res) => {
-  const { items } = req.body;
+  const { items, note } = req.body;
   if (!Array.isArray(items) || !items.length) return res.status(400).json({ error: 'سبد خرید خالی است' });
 
   let total, resolved;
@@ -86,17 +104,17 @@ app.post('/api/checkout/wallet', requireTelegramAuth, (req, res) => {
 
   adjustBalance(user.tg_id, 'rial', -total, 'خرید از فروشگاه (کیف‌پول)');
   resolved.forEach(({ product, qty }) => {
-    createOrder(user.tg_id, product.id, qty, product.price_rial * qty, 'wallet');
+    createOrder(user.tg_id, product.id, qty, product.price_rial * qty, 'wallet', note || null);
   });
   payReferralCommission(user.tg_id, total);
 
-  sendMessage(user.tg_id, `✅ سفارش شما ثبت شد.\nمبلغ: ${total.toLocaleString()} تومان`).catch(() => {});
+  sendMessage(user.tg_id, `✅ سفارش شما ثبت شد.\nمبلغ: ${total.toLocaleString()} تومان${note ? `\nمقصد: ${note}` : ''}`).catch(() => {});
   res.json({ ok: true, total });
 });
 
 // checkout: pay with Telegram Stars -> returns an invoice link, Mini App opens it with Telegram.WebApp.openInvoice()
 app.post('/api/checkout/stars-invoice', requireTelegramAuth, async (req, res) => {
-  const { items } = req.body;
+  const { items, note } = req.body;
   if (!Array.isArray(items) || !items.length) return res.status(400).json({ error: 'سبد خرید خالی است' });
 
   let resolved;
@@ -113,6 +131,7 @@ app.post('/api/checkout/stars-invoice', requireTelegramAuth, async (req, res) =>
   const payload = JSON.stringify({
     tg_id: req.dbUser.tg_id,
     items: resolved.map(({ product, qty }) => ({ productId: product.id, qty })),
+    note: note || null,
   });
 
   const link = await createStarsInvoiceLink({
@@ -126,7 +145,7 @@ app.post('/api/checkout/stars-invoice', requireTelegramAuth, async (req, res) =>
 
 // checkout / topup: pay with rial payment gateway -> returns redirect URL
 app.post('/api/gateway/start', requireTelegramAuth, async (req, res) => {
-  const { purpose, amountRial, items } = req.body; // purpose: "topup" | "order"
+  const { purpose, amountRial, items, note } = req.body; // purpose: "topup" | "order"
   let amount = amountRial;
   let purposeTag = 'topup';
 
@@ -136,7 +155,7 @@ app.post('/api/gateway/start', requireTelegramAuth, async (req, res) => {
     try { ({ total } = priceCart(items)); }
     catch (e) { return res.status(404).json({ error: e.message }); }
     amount = total;
-    purposeTag = `order:${JSON.stringify(items)}`;
+    purposeTag = `order:${JSON.stringify({ items, note: note || null })}`;
   }
 
   if (!amount || amount < 1000) return res.status(400).json({ error: 'مبلغ نامعتبر است' });
@@ -176,6 +195,81 @@ app.get('/api/referral', requireTelegramAuth, (req, res) => {
   });
 });
 
+/* =========================================================================
+   DAILY WHEEL — چرخ شانس رایگان روزانه (بدون شرط‌بندی، فقط جایزه رایگان)
+   ========================================================================= */
+const WHEEL_REWARDS = [0, 2000, 5000, 5000, 10000, 20000, 50000]; // تومان — قابل تنظیم
+const WHEEL_COOLDOWN_MS = 24 * 60 * 60 * 1000;
+
+app.get('/api/wheel/status', requireTelegramAuth, (req, res) => {
+  const user = getUser(req.dbUser.tg_id);
+  const last = user.last_spin_at ? new Date(user.last_spin_at + 'Z').getTime() : 0;
+  const nextAt = last + WHEEL_COOLDOWN_MS;
+  res.json({ canSpin: Date.now() >= nextAt, nextSpinAt: nextAt, rewards: WHEEL_REWARDS });
+});
+app.post('/api/wheel/spin', requireTelegramAuth, (req, res) => {
+  const user = getUser(req.dbUser.tg_id);
+  const last = user.last_spin_at ? new Date(user.last_spin_at + 'Z').getTime() : 0;
+  if (Date.now() < last + WHEEL_COOLDOWN_MS) return res.status(400).json({ error: 'فردا دوباره امتحان کن' });
+
+  const reward = WHEEL_REWARDS[Math.floor(Math.random() * WHEEL_REWARDS.length)];
+  db.prepare(`UPDATE users SET last_spin_at = datetime('now') WHERE tg_id = ?`).run(user.tg_id);
+  if (reward > 0) adjustBalance(user.tg_id, 'rial', reward, 'جایزه چرخ شانس روزانه');
+  res.json({ reward });
+});
+
+/* =========================================================================
+   STAKING — کاربر بخشی از موجودی ریالی رو قفل می‌کنه و APR سالانه می‌گیره
+   ========================================================================= */
+const STAKE_APR = Number(process.env.STAKE_APR || 38);           // درصد سالانه
+const STAKE_CAP_RIAL = Number(process.env.STAKE_CAP_RIAL || 50000000); // سقف استیک هر کاربر
+
+app.get('/api/stake', requireTelegramAuth, (req, res) => {
+  const user = getUser(req.dbUser.tg_id);
+  res.json({
+    staked_rial: user.staked_rial,
+    pending_reward: pendingStakeReward(user, STAKE_APR),
+    apr: STAKE_APR,
+    cap_rial: STAKE_CAP_RIAL,
+  });
+});
+app.post('/api/stake/deposit', requireTelegramAuth, (req, res) => {
+  const amount = Number(req.body.amount);
+  if (!amount || amount < 1000) return res.status(400).json({ error: 'مبلغ نامعتبر است' });
+  try {
+    stakeDeposit(req.dbUser.tg_id, amount, STAKE_APR, STAKE_CAP_RIAL);
+    res.json({ ok: true });
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
+app.post('/api/stake/withdraw', requireTelegramAuth, (req, res) => {
+  const amount = Number(req.body.amount);
+  if (!amount || amount < 1000) return res.status(400).json({ error: 'مبلغ نامعتبر است' });
+  try {
+    stakeWithdraw(req.dbUser.tg_id, amount, STAKE_APR);
+    res.json({ ok: true });
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
+
+/* =========================================================================
+   TASKS — تسک‌های قابل مدیریت از پنل ادمین
+   ========================================================================= */
+app.get('/api/tasks', requireTelegramAuth, (req, res) => {
+  const tasks = listActiveTasks().map(t => ({ ...t, done: isTaskDone(req.dbUser.tg_id, t.id) }));
+  res.json(tasks);
+});
+app.post('/api/tasks/:id/claim', requireTelegramAuth, async (req, res) => {
+  const task = db.prepare('SELECT * FROM tasks WHERE id = ? AND active = 1').get(req.params.id);
+  if (!task) return res.status(404).json({ error: 'تسک پیدا نشد' });
+  if (isTaskDone(req.dbUser.tg_id, task.id)) return res.status(400).json({ error: 'قبلاً این تسک رو انجام دادی' });
+
+  if (task.type === 'join_channel') {
+    const joined = await isChannelMember(task.channel_username, req.dbUser.tg_id);
+    if (!joined) return res.status(400).json({ error: 'هنوز عضو کانال نشدی' });
+  }
+  completeTask(req.dbUser.tg_id, task);
+  res.json({ ok: true });
+});
+
 // gateway calls this URL back after the user finishes paying (set as ZARINPAL_CALLBACK_URL)
 app.get('/gateway/verify', async (req, res) => {
   const { Authority, Status } = req.query;
@@ -199,13 +293,13 @@ app.get('/gateway/verify', async (req, res) => {
     adjustBalance(record.tg_id, 'rial', record.amount_rial, 'شارژ کیف‌پول از درگاه', refId);
     sendMessage(record.tg_id, `✅ کیف‌پول شما به مبلغ ${record.amount_rial.toLocaleString()} تومان شارژ شد.`);
   } else if (record.purpose.startsWith('order:')) {
-    const items = JSON.parse(record.purpose.slice('order:'.length));
+    const { items, note } = JSON.parse(record.purpose.slice('order:'.length));
     items.forEach(({ productId, qty }) => {
       const product = getProduct(productId);
-      if (product) createOrder(record.tg_id, productId, qty, product.price_rial * qty, 'gateway');
+      if (product) createOrder(record.tg_id, productId, qty, product.price_rial * qty, 'gateway', note || null);
     });
     payReferralCommission(record.tg_id, record.amount_rial);
-    sendMessage(record.tg_id, `✅ پرداخت شما تایید شد و سفارش ثبت گردید.`);
+    sendMessage(record.tg_id, `✅ پرداخت شما تایید شد و سفارش ثبت گردید.${note ? `\nمقصد: ${note}` : ''}`);
   }
 
   res.send('پرداخت با موفقیت انجام شد ✅ می‌توانید به ربات بازگردید.');
@@ -226,12 +320,42 @@ app.post('/telegram-webhook', async (req, res) => {
   // 1) کاربر ربات را استارت کرده -> پیام خوش‌آمد + دکمه باز کردن مینی‌اپ
   if (update.message?.text?.startsWith('/start')) {
     const chatId = update.message.chat.id;
-    getOrCreateUser(update.message.from, update.message.text.split(' ')[1]?.replace('ref_', ''));
+    const refParam = update.message.text.split(' ')[1]; // مثلاً ref_123456 — دیگه پیشوند رو حذف نمی‌کنیم چون دقیقاً با ref_code دیتابیس باید یکی باشه
+    getOrCreateUser(update.message.from, refParam);
+
+    if (process.env.REQUIRED_CHANNEL) {
+      const joined = await isChannelMember(process.env.REQUIRED_CHANNEL, update.message.from.id);
+      if (!joined) {
+        await sendMessage(chatId, `برای استفاده از ربات، اول باید عضو کانال ما بشی:`, {
+          reply_markup: { inline_keyboard: [
+            [{ text: '📢 عضویت در کانال', url: `https://t.me/${process.env.REQUIRED_CHANNEL.replace('@','')}` }],
+            [{ text: '✅ عضو شدم، بررسی کن', callback_data: 'check_join' }],
+          ] },
+        });
+        return;
+      }
+    }
+
     await sendMessage(chatId, 'به <b>استارکده</b> خوش اومدی ✨\nاز دکمه پایین فروشگاه رو باز کن:', {
       reply_markup: {
         inline_keyboard: [[{ text: '🛍 باز کردن فروشگاه', web_app: { url: process.env.PUBLIC_URL + '/miniapp' } }]],
       },
     });
+    return;
+  }
+
+  // 1b) دکمه «عضو شدم، بررسی کن»
+  if (update.callback_query?.data === 'check_join') {
+    answerCallbackQuery(update.callback_query.id).catch(() => {});
+    const chatId = update.callback_query.message.chat.id;
+    const joined = !process.env.REQUIRED_CHANNEL || await isChannelMember(process.env.REQUIRED_CHANNEL, update.callback_query.from.id);
+    if (joined) {
+      await sendMessage(chatId, 'عضویت تایید شد ✅ از دکمه پایین فروشگاه رو باز کن:', {
+        reply_markup: { inline_keyboard: [[{ text: '🛍 باز کردن فروشگاه', web_app: { url: process.env.PUBLIC_URL + '/miniapp' } }]] },
+      });
+    } else {
+      await sendMessage(chatId, '❌ هنوز عضو کانال نشدی.');
+    }
     return;
   }
 
@@ -270,7 +394,7 @@ app.post('/telegram-webhook', async (req, res) => {
     payload.items.forEach(({ productId, qty }) => {
       const product = getProduct(productId);
       if (!product) return;
-      createOrder(payload.tg_id, productId, qty, product.price_rial * qty, 'stars');
+      createOrder(payload.tg_id, productId, qty, product.price_rial * qty, 'stars', payload.note || null);
       names.push(`${product.name} ×${qty}`);
     });
     const totalRial = payload.items.reduce((s, { productId, qty }) => {
@@ -279,7 +403,7 @@ app.post('/telegram-webhook', async (req, res) => {
     }, 0);
     payReferralCommission(payload.tg_id, totalRial);
 
-    await sendMessage(payload.tg_id, `✅ پرداخت با ${sp.total_amount}⭐️ موفق بود.\nسفارش: ${names.join('، ')}`);
+    await sendMessage(payload.tg_id, `✅ پرداخت با ${sp.total_amount}⭐️ موفق بود.\nسفارش: ${names.join('، ')}${payload.note ? `\nمقصد: ${payload.note}` : ''}`);
   }
 });
 
