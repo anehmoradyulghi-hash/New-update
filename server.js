@@ -2,7 +2,7 @@ import 'dotenv/config';
 import express from 'express';
 import {
   sendMessage, answerPreCheckoutQuery, answerCallbackQuery, createStarsInvoiceLink,
-  setWebhook, validateInitData, isChannelMember,
+  setWebhook, validateInitData, isChannelMember, getMe,
 } from './telegram.js';
 import { requestPayment, verifyPayment } from './gateway.js';
 import db, {
@@ -10,9 +10,8 @@ import db, {
   createOrder, getProduct,
   settleStake, pendingStakeReward, stakeDeposit, stakeWithdraw,
   listActiveTasks, isTaskDone, completeTask,
-  createCardTopup,
-  createListing, listActiveListings, myListings, cancelListing, buyListing,
-  myPurchases, mySales, confirmOrderReceipt, disputeOrder,
+  createListing, getListing, getMarketListings, getMyListings, cancelListing, reserveListing, confirmReceived,
+  createManualPayment, getManualPayment, setManualPaymentStatus,
 } from './db.js';
 import adminRouter from './admin.js';
 
@@ -22,10 +21,17 @@ app.use(express.json());
 app.get('/', (req, res) => res.send('✅ starkadeh backend is running'));
 
 // لینک‌های عمومی کانال/چت که مینی‌اپ برای دکمه‌های صفحه بازی‌ها ازش استفاده می‌کنه
-app.get('/api/config', (req, res) => {
+let cachedBotUsername = null;
+app.get('/api/config', async (req, res) => {
+  if (!cachedBotUsername) {
+    try { const me = await getMe(); cachedBotUsername = me.result?.username || null; } catch (e) {}
+  }
   res.json({
     channel: process.env.REQUIRED_CHANNEL || process.env.COMMUNITY_CHANNEL || null,
     chat: process.env.COMMUNITY_CHAT || null,
+    botUsername: cachedBotUsername,
+    cardNumber: process.env.ADMIN_CARD_NUMBER || null,
+    cardOwner: process.env.ADMIN_CARD_OWNER || null,
   });
 });
 
@@ -199,6 +205,56 @@ app.get('/api/referral', requireTelegramAuth, (req, res) => {
 });
 
 /* =========================================================================
+   GIFT MARKET — بازار گیفت کاربران (امانی، مثل پرتال)
+   ========================================================================= */
+const GIFT_MARKET_FEE = Number(process.env.GIFT_MARKET_FEE_PERCENT || 5); // درصد کارمزد پلتفرم
+
+// آگهی‌های خودم (چه فروشنده باشم چه خریدار)
+app.get('/api/gifts/my', requireTelegramAuth, (req, res) => {
+  res.json(getMyListings(req.dbUser.tg_id));
+});
+
+// آگهی جدید — گیفت واقعی خودم رو برای فروش می‌ذارم
+app.post('/api/gifts/list', requireTelegramAuth, (req, res) => {
+  const { title, image_url, price } = req.body;
+  const p = Number(price);
+  if (!title || !p || p < 5000) return res.status(400).json({ error: 'عنوان و قیمت معتبر لازمه' });
+  const id = createListing(req.dbUser.tg_id, title, image_url, p);
+  res.json({ ok: true, id });
+});
+
+app.post('/api/gifts/:id/cancel', requireTelegramAuth, (req, res) => {
+  try { cancelListing(req.dbUser.tg_id, req.params.id); res.json({ ok: true }); }
+  catch (e) { res.status(400).json({ error: e.message }); }
+});
+
+// بازار — همه آگهی‌های در دسترس بقیه کاربرا
+app.get('/api/gifts/market', requireTelegramAuth, (req, res) => {
+  res.json({ listings: getMarketListings(req.dbUser.tg_id), feePercent: GIFT_MARKET_FEE });
+});
+
+// خرید = رزرو + بلوکه شدن پول (امانت) — هنوز به فروشنده واریز نمی‌شه
+app.post('/api/gifts/:id/buy', requireTelegramAuth, (req, res) => {
+  try {
+    const g = reserveListing(req.dbUser.tg_id, req.params.id);
+    const buyer = req.dbUser;
+    sendMessage(g.seller_tg_id,
+      `🎁 گیفت «${g.title}» رزرو شد!\nخریدار: ${buyer.first_name || ''} ${buyer.username ? '@'+buyer.username : `(آیدی: ${buyer.tg_id})`}\n\nلطفاً گیفت رو مستقیم تو تلگرام براش بفرست. پول (${g.price_rial.toLocaleString()} ت منهای کارمزد) بعد از تایید خریدار به کیف‌پولت واریز می‌شه.`
+    ).catch(() => {});
+    res.json({ ok: true });
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
+
+// خریدار تایید می‌کنه گیفت واقعاً بهش رسیده -> پول امانت آزاد می‌شه به فروشنده
+app.post('/api/gifts/:id/confirm-received', requireTelegramAuth, (req, res) => {
+  try {
+    const result = confirmReceived(req.dbUser.tg_id, req.params.id, GIFT_MARKET_FEE);
+    sendMessage(result.seller_tg_id, `✅ خریدار دریافت گیفت «${result.title}» رو تایید کرد.\n+${result.sellerReceives.toLocaleString()} تومان به کیف‌پولت اضافه شد.`).catch(() => {});
+    res.json({ ok: true });
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
+
+/* =========================================================================
    DAILY WHEEL — چرخ شانس رایگان روزانه (بدون شرط‌بندی، فقط جایزه رایگان)
    ========================================================================= */
 const WHEEL_REWARDS = [0, 2000, 5000, 5000, 10000, 20000, 50000]; // تومان — قابل تنظیم
@@ -273,88 +329,25 @@ app.post('/api/tasks/:id/claim', requireTelegramAuth, async (req, res) => {
   res.json({ ok: true });
 });
 
-/* =========================================================================
-   CARD-TO-CARD TOP-UP — کاربر مبلغ رو خودش کارت‌به‌کارت می‌کنه و کد رهگیری
-   وارد می‌کنه، ادمین از پنل تایید/رد می‌کنه (شارژ فقط بعد از تایید انجام می‌شود)
-   ========================================================================= */
-app.get('/api/topup/card-info', requireTelegramAuth, (req, res) => {
-  res.json({
-    cardNumber: process.env.CARD_NUMBER || '',
-    cardHolder: process.env.CARD_HOLDER || '',
-  });
-});
-
-app.post('/api/topup/card-request', requireTelegramAuth, (req, res) => {
-  const { amountRial, cardLast4, trackCode, note } = req.body;
-  const amount = Number(amountRial);
+// شارژ کیف‌پول با کارت‌به‌کارت — نیاز به تایید دستی ادمین داره
+app.post('/api/wallet/card-topup', requireTelegramAuth, async (req, res) => {
+  const amount = Number(req.body.amount);
+  const trackingCode = String(req.body.trackingCode || '').trim();
   if (!amount || amount < 1000) return res.status(400).json({ error: 'مبلغ نامعتبر است' });
-  if (!trackCode || !String(trackCode).trim()) return res.status(400).json({ error: 'کد رهگیری تراکنش را وارد کن' });
-  if (!process.env.CARD_NUMBER) return res.status(400).json({ error: 'شماره کارت هنوز توسط پشتیبانی تنظیم نشده' });
+  if (!trackingCode) return res.status(400).json({ error: 'کد رهگیری یا ۴ رقم آخر کارت رو وارد کن' });
 
-  const id = createCardTopup(req.dbUser.tg_id, amount, cardLast4 || null, String(trackCode).trim(), note || null);
-
-  ADMIN_IDS.forEach(adminId => {
-    sendMessage(adminId, `💳 درخواست شارژ کارت‌به‌کارت جدید #${id}\nکاربر: ${req.dbUser.first_name || ''} (${req.dbUser.tg_id})\nمبلغ: ${amount.toLocaleString()} تومان\nکد رهگیری: ${trackCode}`).catch(() => {});
+  const id = createManualPayment(req.dbUser.tg_id, amount, trackingCode);
+  const adminIdsList = (process.env.ADMIN_IDS || '').split(',').map(s => s.trim()).filter(Boolean);
+  const text = `💳 درخواست شارژ کارت‌به‌کارت\nکاربر: ${req.dbUser.first_name || ''} (${req.dbUser.tg_id})\nمبلغ: ${amount.toLocaleString()} تومان\nکد رهگیری: ${trackingCode}`;
+  adminIdsList.forEach(id2 => {
+    sendMessage(id2, text, {
+      reply_markup: { inline_keyboard: [[
+        { text: '✅ تایید و شارژ', callback_data: `approve_pay:${id}` },
+        { text: '❌ رد', callback_data: `reject_pay:${id}` },
+      ]] },
+    }).catch(() => {});
   });
-
-  res.json({ ok: true, id });
-});
-
-app.get('/api/topup/card-requests', requireTelegramAuth, (req, res) => {
-  const rows = db.prepare('SELECT * FROM card_topups WHERE tg_id = ? ORDER BY created_at DESC LIMIT 20').all(req.dbUser.tg_id);
-  res.json(rows);
-});
-
-/* =========================================================================
-   P2P GIFT MARKETPLACE — کاربرها گیفت پروفایل تلگرام خودشون رو مستقیم به هم
-   می‌فروشن (مثل پرتال). پول خریدار تا تایید دریافت گیفت نزد سیستم امانت می‌مونه.
-   ========================================================================= */
-const MARKET_FEE_PERCENT = Number(process.env.MARKET_FEE_PERCENT || 5);
-
-app.get('/api/market/listings', requireTelegramAuth, (req, res) => {
-  res.json(listActiveListings(req.dbUser.tg_id));
-});
-app.post('/api/market/listings', requireTelegramAuth, (req, res) => {
-  const { title, description, priceRial, imageUrl } = req.body;
-  const price = Number(priceRial);
-  if (!title || !String(title).trim()) return res.status(400).json({ error: 'نام گیفت را وارد کن' });
-  if (!price || price < 1000) return res.status(400).json({ error: 'قیمت نامعتبر است' });
-  const id = createListing(req.dbUser.tg_id, String(title).trim(), description || null, price, imageUrl || null);
-  res.json({ ok: true, id });
-});
-app.get('/api/market/my-listings', requireTelegramAuth, (req, res) => {
-  res.json(myListings(req.dbUser.tg_id));
-});
-app.delete('/api/market/listings/:id', requireTelegramAuth, (req, res) => {
-  try { cancelListing(Number(req.params.id), req.dbUser.tg_id); res.json({ ok: true }); }
-  catch (e) { res.status(400).json({ error: e.message }); }
-});
-app.post('/api/market/listings/:id/buy', requireTelegramAuth, (req, res) => {
-  try {
-    const { orderId, listing } = buyListing(Number(req.params.id), req.dbUser.tg_id, MARKET_FEE_PERCENT);
-    sendMessage(listing.seller_tg_id, `🎁 آگهی «${listing.title}» شما فروخته شد!\nگیفت رو مستقیم توی تلگرام برای خریدار بفرست. بعد از دریافت، خریدار توی اپ تایید می‌کنه تا مبلغ (منهای کارمزد) به کیف‌پولت واریز بشه.\nسفارش: #${orderId}`).catch(() => {});
-    res.json({ ok: true, orderId });
-  } catch (e) { res.status(400).json({ error: e.message }); }
-});
-app.get('/api/market/my-purchases', requireTelegramAuth, (req, res) => {
-  res.json(myPurchases(req.dbUser.tg_id));
-});
-app.get('/api/market/my-sales', requireTelegramAuth, (req, res) => {
-  res.json(mySales(req.dbUser.tg_id));
-});
-app.post('/api/market/orders/:id/confirm', requireTelegramAuth, (req, res) => {
-  try {
-    const order = confirmOrderReceipt(Number(req.params.id), req.dbUser.tg_id);
-    sendMessage(order.seller_tg_id, `✅ خریدار دریافت گیفت رو تایید کرد.\nمبلغ ${(order.price_rial - order.fee_rial).toLocaleString()} تومان به کیف‌پولت واریز شد.`).catch(() => {});
-    res.json({ ok: true });
-  } catch (e) { res.status(400).json({ error: e.message }); }
-});
-app.post('/api/market/orders/:id/dispute', requireTelegramAuth, (req, res) => {
-  try {
-    const order = disputeOrder(Number(req.params.id), req.dbUser.tg_id);
-    ADMIN_IDS.forEach(adminId => sendMessage(adminId, `⚠️ اعتراض روی سفارش مارکت گیفت #${order.id} ثبت شد. لطفاً از پنل بررسی کن.`).catch(() => {}));
-    res.json({ ok: true });
-  } catch (e) { res.status(400).json({ error: e.message }); }
+  res.json({ ok: true });
 });
 
 // gateway calls this URL back after the user finishes paying (set as ZARINPAL_CALLBACK_URL)
@@ -442,6 +435,31 @@ app.post('/telegram-webhook', async (req, res) => {
       });
     } else {
       await sendMessage(chatId, '❌ هنوز عضو کانال نشدی.');
+    }
+    return;
+  }
+
+  // 1c) ادمین دکمه تایید/رد کارت‌به‌کارت رو زده
+  if (update.callback_query?.data?.startsWith('approve_pay:') || update.callback_query?.data?.startsWith('reject_pay:')) {
+    const cq = update.callback_query;
+    answerCallbackQuery(cq.id).catch(() => {});
+    if (!isAdmin(cq.from.id)) { answerCallbackQuery(cq.id, 'فقط ادمین اجازه داره').catch(() => {}); return; }
+
+    const [action, idStr] = cq.data.split(':');
+    const payment = getManualPayment(idStr);
+    if (!payment || payment.status !== 'pending') {
+      await sendMessage(cq.message.chat.id, 'این درخواست قبلاً پردازش شده.');
+      return;
+    }
+    if (action === 'approve_pay') {
+      setManualPaymentStatus(payment.id, 'approved');
+      adjustBalance(payment.tg_id, 'rial', payment.amount_rial, 'شارژ کیف‌پول (کارت‌به‌کارت، تاییدشده)');
+      await sendMessage(cq.message.chat.id, `✅ تایید شد و ${payment.amount_rial.toLocaleString()} تومان به کاربر ${payment.tg_id} اضافه شد.`);
+      await sendMessage(payment.tg_id, `✅ شارژ کارت‌به‌کارت شما تایید شد.\n+${payment.amount_rial.toLocaleString()} تومان به کیف‌پولت اضافه شد.`);
+    } else {
+      setManualPaymentStatus(payment.id, 'rejected');
+      await sendMessage(cq.message.chat.id, `❌ درخواست رد شد.`);
+      await sendMessage(payment.tg_id, `❌ متاسفانه شارژ کارت‌به‌کارت شما تایید نشد. با پشتیبانی در ارتباط باش.`);
     }
     return;
   }
