@@ -1,0 +1,299 @@
+import 'dotenv/config';
+import express from 'express';
+import {
+  sendMessage, answerPreCheckoutQuery, createStarsInvoiceLink,
+  setWebhook, validateInitData,
+} from './telegram.js';
+import { requestPayment, verifyPayment } from './gateway.js';
+import db, {
+  getOrCreateUser, getUser, adjustBalance, payReferralCommission,
+  createOrder, getProduct,
+} from './db.js';
+import adminRouter from './admin.js';
+
+const app = express();
+app.use(express.json());
+
+app.get('/', (req, res) => res.send('✅ starkadeh backend is running'));
+
+const ADMIN_IDS = (process.env.ADMIN_IDS || '').split(',').map(s => s.trim()).filter(Boolean).map(Number);
+const isAdmin = (id) => ADMIN_IDS.includes(Number(id));
+
+/* =========================================================================
+   MIDDLEWARE: every /api/* call from the Mini App must carry a valid
+   Telegram initData string in the "X-Init-Data" header. This is how we
+   know WHO is calling us without any separate login system.
+   ========================================================================= */
+function requireTelegramAuth(req, res, next) {
+  const initData = req.headers['x-init-data'];
+  if (!initData) return res.status(401).json({ error: 'no init data' });
+  const tgUser = validateInitData(initData, process.env.BOT_TOKEN);
+  if (!tgUser) return res.status(401).json({ error: 'invalid init data' });
+
+  const params = new URLSearchParams(initData);
+  const startParam = params.get('start_param'); // carries ref_XXXXX if opened via referral link
+  req.dbUser = getOrCreateUser(tgUser, startParam);
+  next();
+}
+
+/* =========================================================================
+   MINI APP API
+   ========================================================================= */
+
+// current user + balances
+app.get('/api/me', requireTelegramAuth, (req, res) => {
+  res.json({
+    tg_id: req.dbUser.tg_id,
+    username: req.dbUser.username,
+    first_name: req.dbUser.first_name,
+    balance_rial: req.dbUser.balance_rial,
+    balance_stars: req.dbUser.balance_stars,
+    ref_code: req.dbUser.ref_code,
+  });
+});
+
+// product catalog
+app.get('/api/products', (req, res) => {
+  const rows = db.prepare('SELECT * FROM products WHERE active = 1').all();
+  res.json(rows);
+});
+
+// helper: validate a cart items array against the real DB prices (never trust client prices)
+function priceCart(items) {
+  let total = 0;
+  const resolved = [];
+  for (const { productId, qty } of items) {
+    const product = getProduct(productId);
+    if (!product) throw new Error('product not found: ' + productId);
+    const q = Math.max(1, Number(qty) || 1);
+    total += product.price_rial * q;
+    resolved.push({ product, qty: q });
+  }
+  return { total, resolved };
+}
+
+// checkout: pay with wallet balance (rial) — items: [{productId, qty}]
+app.post('/api/checkout/wallet', requireTelegramAuth, (req, res) => {
+  const { items } = req.body;
+  if (!Array.isArray(items) || !items.length) return res.status(400).json({ error: 'سبد خرید خالی است' });
+
+  let total, resolved;
+  try { ({ total, resolved } = priceCart(items)); }
+  catch (e) { return res.status(404).json({ error: e.message }); }
+
+  const user = getUser(req.dbUser.tg_id);
+  if (user.balance_rial < total) return res.status(400).json({ error: 'موجودی کیف‌پول کافی نیست' });
+
+  adjustBalance(user.tg_id, 'rial', -total, 'خرید از فروشگاه (کیف‌پول)');
+  resolved.forEach(({ product, qty }) => {
+    createOrder(user.tg_id, product.id, qty, product.price_rial * qty, 'wallet');
+  });
+  payReferralCommission(user.tg_id, total);
+
+  sendMessage(user.tg_id, `✅ سفارش شما ثبت شد.\nمبلغ: ${total.toLocaleString()} تومان`).catch(() => {});
+  res.json({ ok: true, total });
+});
+
+// checkout: pay with Telegram Stars -> returns an invoice link, Mini App opens it with Telegram.WebApp.openInvoice()
+app.post('/api/checkout/stars-invoice', requireTelegramAuth, async (req, res) => {
+  const { items } = req.body;
+  if (!Array.isArray(items) || !items.length) return res.status(400).json({ error: 'سبد خرید خالی است' });
+
+  let resolved;
+  try { ({ resolved } = priceCart(items)); }
+  catch (e) { return res.status(404).json({ error: e.message }); }
+
+  const RIAL_PER_STAR = 385; // نرخ تبدیل داخلی خودتان - قابل تنظیم
+
+  // هر کالا یک خط قیمت جدا در فاکتور استارز می‌شود؛ تلگرام خودش جمع می‌زند
+  const prices = resolved.map(({ product, qty }) => ({
+    label: `${product.name} ×${qty}`,
+    amount: Math.ceil((product.price_rial * qty) / RIAL_PER_STAR),
+  }));
+  const payload = JSON.stringify({
+    tg_id: req.dbUser.tg_id,
+    items: resolved.map(({ product, qty }) => ({ productId: product.id, qty })),
+  });
+
+  const link = await createStarsInvoiceLink({
+    title: 'خرید از استارکده',
+    description: resolved.map(({ product, qty }) => `${product.name} ×${qty}`).join('، '),
+    payload,
+    prices,
+  });
+  res.json({ invoiceLink: link, totalStars: prices.reduce((s, p) => s + p.amount, 0) });
+});
+
+// checkout / topup: pay with rial payment gateway -> returns redirect URL
+app.post('/api/gateway/start', requireTelegramAuth, async (req, res) => {
+  const { purpose, amountRial, items } = req.body; // purpose: "topup" | "order"
+  let amount = amountRial;
+  let purposeTag = 'topup';
+
+  if (purpose === 'order') {
+    if (!Array.isArray(items) || !items.length) return res.status(400).json({ error: 'سبد خرید خالی است' });
+    let total;
+    try { ({ total } = priceCart(items)); }
+    catch (e) { return res.status(404).json({ error: e.message }); }
+    amount = total;
+    purposeTag = `order:${JSON.stringify(items)}`;
+  }
+
+  if (!amount || amount < 1000) return res.status(400).json({ error: 'مبلغ نامعتبر است' });
+
+  const { authority, payUrl } = await requestPayment({
+    amountRial: amount,
+    description: purpose === 'topup' ? 'شارژ کیف‌پول استارکده' : 'خرید از استارکده',
+  });
+
+  db.prepare(`INSERT INTO gateway_payments (authority, tg_id, amount_rial, purpose) VALUES (?,?,?,?)`)
+    .run(authority, req.dbUser.tg_id, amount, purposeTag);
+
+  res.json({ payUrl });
+});
+
+// user's own transaction history (wallet page)
+app.get('/api/wallet/transactions', requireTelegramAuth, (req, res) => {
+  const rows = db.prepare('SELECT * FROM transactions WHERE tg_id = ? ORDER BY created_at DESC LIMIT 40').all(req.dbUser.tg_id);
+  res.json(rows);
+});
+
+// user's own order history (profile page)
+app.get('/api/orders', requireTelegramAuth, (req, res) => {
+  const rows = db.prepare('SELECT * FROM orders WHERE tg_id = ? ORDER BY created_at DESC LIMIT 30').all(req.dbUser.tg_id);
+  res.json(rows);
+});
+
+// referral stats + invited list for the current user
+app.get('/api/referral', requireTelegramAuth, (req, res) => {
+  const invited = db.prepare('SELECT tg_id, username, first_name, created_at FROM users WHERE referred_by = ?').all(req.dbUser.tg_id);
+  const totalEarned = db.prepare(`SELECT COALESCE(SUM(amount),0) s FROM transactions WHERE tg_id = ? AND reason LIKE 'پورسانت%'`).get(req.dbUser.tg_id).s;
+  res.json({
+    ref_code: req.dbUser.ref_code,
+    invited_count: invited.length,
+    total_earned: totalEarned,
+    invited,
+  });
+});
+
+// gateway calls this URL back after the user finishes paying (set as ZARINPAL_CALLBACK_URL)
+app.get('/gateway/verify', async (req, res) => {
+  const { Authority, Status } = req.query;
+  const record = db.prepare('SELECT * FROM gateway_payments WHERE authority = ?').get(Authority);
+  if (!record) return res.status(404).send('پرداخت پیدا نشد');
+
+  if (Status !== 'OK') {
+    db.prepare(`UPDATE gateway_payments SET status = 'failed' WHERE authority = ?`).run(Authority);
+    return res.send('پرداخت لغو شد. می‌توانید این صفحه را ببندید و به ربات بازگردید.');
+  }
+
+  const { ok, refId } = await verifyPayment({ authority: Authority, amountRial: record.amount_rial });
+  if (!ok) {
+    db.prepare(`UPDATE gateway_payments SET status = 'failed' WHERE authority = ?`).run(Authority);
+    return res.send('تایید پرداخت ناموفق بود.');
+  }
+
+  db.prepare(`UPDATE gateway_payments SET status = 'paid' WHERE authority = ?`).run(Authority);
+
+  if (record.purpose === 'topup') {
+    adjustBalance(record.tg_id, 'rial', record.amount_rial, 'شارژ کیف‌پول از درگاه', refId);
+    sendMessage(record.tg_id, `✅ کیف‌پول شما به مبلغ ${record.amount_rial.toLocaleString()} تومان شارژ شد.`);
+  } else if (record.purpose.startsWith('order:')) {
+    const items = JSON.parse(record.purpose.slice('order:'.length));
+    items.forEach(({ productId, qty }) => {
+      const product = getProduct(productId);
+      if (product) createOrder(record.tg_id, productId, qty, product.price_rial * qty, 'gateway');
+    });
+    payReferralCommission(record.tg_id, record.amount_rial);
+    sendMessage(record.tg_id, `✅ پرداخت شما تایید شد و سفارش ثبت گردید.`);
+  }
+
+  res.send('پرداخت با موفقیت انجام شد ✅ می‌توانید به ربات بازگردید.');
+});
+
+/* =========================================================================
+   TELEGRAM WEBHOOK — receives all bot updates (messages + payments)
+   ========================================================================= */
+app.post('/telegram-webhook', async (req, res) => {
+  // امنیت: تلگرام هدر secret token شما را در هر درخواست برمی‌گرداند
+  if (req.headers['x-telegram-bot-api-secret-token'] !== process.env.WEBHOOK_SECRET) {
+    return res.sendStatus(401);
+  }
+  res.sendStatus(200); // پاسخ فوری به تلگرام؛ پردازش را بعد از آن انجام می‌دهیم
+
+  const update = req.body;
+
+  // 1) کاربر ربات را استارت کرده -> پیام خوش‌آمد + دکمه باز کردن مینی‌اپ
+  if (update.message?.text?.startsWith('/start')) {
+    const chatId = update.message.chat.id;
+    getOrCreateUser(update.message.from, update.message.text.split(' ')[1]?.replace('ref_', ''));
+    await sendMessage(chatId, 'به <b>استارکده</b> خوش اومدی ✨\nاز دکمه پایین فروشگاه رو باز کن:', {
+      reply_markup: {
+        inline_keyboard: [[{ text: '🛍 باز کردن فروشگاه', web_app: { url: process.env.PUBLIC_URL + '/miniapp' } }]],
+      },
+    });
+    return;
+  }
+
+  // 2) دستورات مدیریتی ادمین در چت با ربات
+  if (update.message?.text && isAdmin(update.message.from.id)) {
+    const [cmd, ...args] = update.message.text.trim().split(' ');
+    const chatId = update.message.chat.id;
+
+    if (cmd === '/stats') {
+      const users = db.prepare('SELECT COUNT(*) c FROM users').get().c;
+      const rialIn = db.prepare(`SELECT COALESCE(SUM(amount),0) s FROM transactions WHERE type='in' AND currency='rial'`).get().s;
+      const orders = db.prepare('SELECT COUNT(*) c FROM orders').get().c;
+      await sendMessage(chatId, `📊 آمار کلی\nکاربران: ${users}\nسفارش‌ها: ${orders}\nمجموع واریزی: ${rialIn.toLocaleString()} تومان`);
+    }
+
+    if (cmd === '/addbalance' && args.length === 2) {
+      const [targetId, amount] = args;
+      adjustBalance(Number(targetId), 'rial', Number(amount), 'شارژ دستی توسط ادمین');
+      await sendMessage(chatId, `✅ ${amount} تومان به کیف‌پول ${targetId} اضافه شد.`);
+      await sendMessage(Number(targetId), `💰 مبلغ ${Number(amount).toLocaleString()} تومان توسط پشتیبانی به کیف‌پول شما اضافه شد.`);
+    }
+  }
+
+  // 3) پیش از پرداخت استارز -> باید طی ۱۰ ثانیه تایید شود
+  if (update.pre_checkout_query) {
+    await answerPreCheckoutQuery(update.pre_checkout_query.id, true);
+    return;
+  }
+
+  // 4) پرداخت استارز با موفقیت انجام شد -> تحویل کالا / شارژ موجودی
+  if (update.message?.successful_payment) {
+    const sp = update.message.successful_payment;
+    const payload = JSON.parse(sp.invoice_payload);
+
+    let names = [];
+    payload.items.forEach(({ productId, qty }) => {
+      const product = getProduct(productId);
+      if (!product) return;
+      createOrder(payload.tg_id, productId, qty, product.price_rial * qty, 'stars');
+      names.push(`${product.name} ×${qty}`);
+    });
+    const totalRial = payload.items.reduce((s, { productId, qty }) => {
+      const p = getProduct(productId);
+      return s + (p ? p.price_rial * qty : 0);
+    }, 0);
+    payReferralCommission(payload.tg_id, totalRial);
+
+    await sendMessage(payload.tg_id, `✅ پرداخت با ${sp.total_amount}⭐️ موفق بود.\nسفارش: ${names.join('، ')}`);
+  }
+});
+
+/* =========================================================================
+   SERVE THE MINI APP FRONTEND (the HTML file from earlier)
+   ========================================================================= */
+app.use('/miniapp', express.static('public')); // put starkadeh-miniapp.html as public/index.html
+app.use('/admin/api', adminRouter);            // admin panel API (password protected, see admin.js)
+app.use('/admin', express.static('admin-panel')); // admin panel frontend (admin-panel/index.html)
+
+app.listen(process.env.PORT || 3000, async () => {
+  console.log(`🚀 server running on port ${process.env.PORT || 3000}`);
+  if (process.env.PUBLIC_URL) {
+    const r = await setWebhook(`${process.env.PUBLIC_URL}/telegram-webhook`, process.env.WEBHOOK_SECRET);
+    console.log('webhook set:', r.ok);
+  }
+});
