@@ -18,7 +18,7 @@ import db, {
   createManualPayment, getManualPayment, setManualPaymentStatus,
   listCurrencies, getUserBalances, adjustCurrencyBalance, getCurrencyBalance,
   createCurrencyRequest, getCurrencyRequest, setCurrencyRequestStatus,
-  listGameCards, getGameCard, buyGameCard, getUserCards,
+  listGameCards, getGameCard, buyGameCard, getUserCards, upgradeUserCard,
   getPlaysRemaining, addExtraPlays, joinQueue, getQueueStatus, cancelQueue,
   getLeaderboard, getMyRank, listLeaderboardPrizes,
 } from './db.js';
@@ -440,6 +440,30 @@ app.post('/api/wallet/currency-withdraw', requireTelegramAuth, (req, res) => {
   res.json({ ok: true });
 });
 
+// برداشت ریالی (کارت‌به‌کارت دستی) — کنار شارژ کیف‌پول
+app.post('/api/wallet/rial-withdraw', requireTelegramAuth, (req, res) => {
+  const amount = Number(req.body.amount);
+  const cardNumber = String(req.body.cardNumber || '').trim();
+  if (!amount || amount < 10000) return res.status(400).json({ error: 'حداقل مبلغ برداشت ۱۰,۰۰۰ تومانه' });
+  if (!cardNumber) return res.status(400).json({ error: 'شماره کارت مقصد رو وارد کن' });
+  const user = getUser(req.dbUser.tg_id);
+  if (user.balance_rial < amount) return res.status(400).json({ error: 'موجودی کافی نیست' });
+
+  adjustBalance(user.tg_id, 'rial', -amount, 'درخواست برداشت ریالی (در انتظار تایید)');
+  const id = createCurrencyRequest(user.tg_id, 'RIAL', 'withdraw', amount, cardNumber, null);
+  const adminIdsList = (process.env.ADMIN_IDS || '').split(',').map(s => s.trim()).filter(Boolean);
+  const text2 = `📤 درخواست برداشت ریالی\nکاربر: ${req.dbUser.first_name || ''} (${req.dbUser.tg_id})\nمبلغ: ${amount.toLocaleString()} تومان\nشماره کارت: ${cardNumber}`;
+  adminIdsList.forEach(id2 => {
+    sendMessage(id2, text2, {
+      reply_markup: { inline_keyboard: [[
+        { text: '✅ ارسال شد', callback_data: `approve_cwd:${id}` },
+        { text: '❌ رد و برگشت وجه', callback_data: `reject_cwd:${id}` },
+      ]] },
+    }).catch(() => {});
+  });
+  res.json({ ok: true });
+});
+
 /* =========================================================================
    CARD GAME — فروشگاه کارت، مچ‌سازی ۱به۱، لیدربورد
    ========================================================================= */
@@ -456,6 +480,10 @@ app.get('/api/game/my-cards', requireTelegramAuth, (req, res) => {
 });
 app.post('/api/game/buy-card', requireTelegramAuth, (req, res) => {
   try { buyGameCard(req.dbUser.tg_id, req.body.cardId); res.json({ ok: true }); }
+  catch (e) { res.status(400).json({ error: e.message }); }
+});
+app.post('/api/game/upgrade-card', requireTelegramAuth, (req, res) => {
+  try { const result = upgradeUserCard(req.dbUser.tg_id, req.body.userCardId); res.json({ ok: true, ...result }); }
   catch (e) { res.status(400).json({ error: e.message }); }
 });
 
@@ -654,13 +682,19 @@ app.post('/telegram-webhook', async (req, res) => {
     }
     if (action === 'approve_cwd') {
       setCurrencyRequestStatus(reqRow.id, 'approved'); // موجودی از قبل موقع درخواست کسر شده بود
-      await sendMessage(cq.message.chat.id, `✅ ثبت شد. یادت نره ${reqRow.amount} ${reqRow.currency_code} رو دستی به آدرس زیر بفرستی:\n${reqRow.address}`);
-      await sendMessage(reqRow.tg_id, `✅ برداشت ${reqRow.amount} ${reqRow.currency_code} انجام و ارسال شد.`);
+      const label = reqRow.currency_code === 'RIAL' ? `${reqRow.amount.toLocaleString()} تومان` : `${reqRow.amount} ${reqRow.currency_code}`;
+      await sendMessage(cq.message.chat.id, `✅ ثبت شد. یادت نره ${label} رو دستی به مقصد زیر بفرستی:\n${reqRow.address}`);
+      await sendMessage(reqRow.tg_id, `✅ برداشت ${label} انجام و ارسال شد.`);
     } else {
       setCurrencyRequestStatus(reqRow.id, 'rejected');
-      adjustCurrencyBalance(reqRow.tg_id, reqRow.currency_code, reqRow.amount); // برگشت وجه بلوکه‌شده
+      if (reqRow.currency_code === 'RIAL') {
+        adjustBalance(reqRow.tg_id, 'rial', reqRow.amount, 'بازگشت وجه برداشت ردشده');
+      } else {
+        adjustCurrencyBalance(reqRow.tg_id, reqRow.currency_code, reqRow.amount); // برگشت وجه بلوکه‌شده
+      }
+      const label = reqRow.currency_code === 'RIAL' ? 'ریالی' : reqRow.currency_code;
       await sendMessage(cq.message.chat.id, `↩️ درخواست رد شد و موجودی برگشت.`);
-      await sendMessage(reqRow.tg_id, `❌ برداشت ${reqRow.currency_code} شما رد شد و مبلغ به کیف‌پولت برگشت.`);
+      await sendMessage(reqRow.tg_id, `❌ برداشت ${label} شما رد شد و مبلغ به کیف‌پولت برگشت.`);
     }
     return;
   }
