@@ -8,6 +8,8 @@ import db, {
   listGiftCategories, addGiftCategory, deleteGiftCategory,
   listCurrencies, addCurrency, updateCurrency, deleteCurrency,
   adjustCurrencyBalance, getAllCurrencyRequestsForAdmin,
+  listGameCards, addGameCard, updateGameCard, deleteGameCard,
+  getLeaderboard, listLeaderboardPrizes, addLeaderboardPrize, deleteLeaderboardPrize,
 } from './db.js';
 import { sendMessage } from './telegram.js';
 
@@ -235,19 +237,19 @@ router.get('/tasks', (req, res) => {
   res.json(rows);
 });
 router.post('/tasks', (req, res) => {
-  const { id, title, description, type, channel_username, link, reward_rial, reward_stars } = req.body;
+  const { id, title, description, type, channel_username, link, reward_rial, reward_stars, reward_card_id } = req.body;
   if (!id || !title || !type) return res.status(400).json({ error: 'فیلدهای ضروری خالی است' });
-  db.prepare(`INSERT INTO tasks (id, title, description, type, channel_username, link, reward_rial, reward_stars) VALUES (?,?,?,?,?,?,?,?)`)
-    .run(id, title, description || '', type, channel_username || null, link || null, reward_rial || 0, reward_stars || 0);
+  db.prepare(`INSERT INTO tasks (id, title, description, type, channel_username, link, reward_rial, reward_stars, reward_card_id) VALUES (?,?,?,?,?,?,?,?,?)`)
+    .run(id, title, description || '', type, channel_username || null, link || null, reward_rial || 0, reward_stars || 0, reward_card_id || null);
   res.json({ ok: true });
 });
 router.patch('/tasks/:id', (req, res) => {
   const t = db.prepare('SELECT * FROM tasks WHERE id = ?').get(req.params.id);
   if (!t) return res.status(404).json({ error: 'not found' });
   const b = req.body;
-  db.prepare(`UPDATE tasks SET title=?, description=?, type=?, channel_username=?, link=?, reward_rial=?, reward_stars=?, active=? WHERE id=?`)
+  db.prepare(`UPDATE tasks SET title=?, description=?, type=?, channel_username=?, link=?, reward_rial=?, reward_stars=?, reward_card_id=?, active=? WHERE id=?`)
     .run(b.title ?? t.title, b.description ?? t.description, b.type ?? t.type, b.channel_username ?? t.channel_username,
-         b.link ?? t.link, b.reward_rial ?? t.reward_rial, b.reward_stars ?? t.reward_stars, b.active ?? t.active, req.params.id);
+         b.link ?? t.link, b.reward_rial ?? t.reward_rial, b.reward_stars ?? t.reward_stars, b.reward_card_id ?? t.reward_card_id, b.active ?? t.active, req.params.id);
   res.json({ ok: true });
 });
 router.delete('/tasks/:id', (req, res) => {
@@ -297,6 +299,45 @@ router.delete('/currencies/:code', (req, res) => {
 // تاریخچه‌ی همه‌ی درخواست‌های واریز/برداشت ارزی (برای نظارت — تایید اصلی از داخل ربات انجام می‌شه)
 router.get('/currency-requests', (req, res) => {
   res.json(getAllCurrencyRequestsForAdmin());
+});
+
+/* =========================================================================
+   CARD GAME — کارت‌ها، لیدربورد و جایزه‌ها
+   ========================================================================= */
+router.get('/game-cards', (req, res) => {
+  res.json(listGameCards(false));
+});
+router.post('/game-cards', (req, res) => {
+  const { id, name, image_url, power, description, currency_code, price } = req.body;
+  if (!id || !name || !currency_code) return res.status(400).json({ error: 'شناسه، نام و ارز الزامیه' });
+  try { addGameCard(id, name, image_url, Number(power) || 10, description, currency_code, Number(price) || 0); res.json({ ok: true }); }
+  catch (e) { res.status(400).json({ error: 'این شناسه قبلاً استفاده شده' }); }
+});
+router.patch('/game-cards/:id', (req, res) => {
+  try { updateGameCard(req.params.id, req.body); res.json({ ok: true }); }
+  catch (e) { res.status(400).json({ error: e.message }); }
+});
+router.delete('/game-cards/:id', (req, res) => {
+  deleteGameCard(req.params.id);
+  res.json({ ok: true });
+});
+
+router.get('/game-leaderboard', (req, res) => {
+  res.json(getLeaderboard(100));
+});
+
+router.get('/leaderboard-prizes', (req, res) => {
+  res.json(listLeaderboardPrizes());
+});
+router.post('/leaderboard-prizes', (req, res) => {
+  const { rank_from, rank_to, prize_text } = req.body;
+  if (!rank_from || !rank_to || !prize_text) return res.status(400).json({ error: 'همه فیلدها الزامیه' });
+  addLeaderboardPrize(Number(rank_from), Number(rank_to), prize_text);
+  res.json({ ok: true });
+});
+router.delete('/leaderboard-prizes/:id', (req, res) => {
+  deleteLeaderboardPrize(req.params.id);
+  res.json({ ok: true });
 });
 
 export default router;
