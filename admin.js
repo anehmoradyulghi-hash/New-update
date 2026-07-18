@@ -6,6 +6,8 @@ import path from 'path';
 import db, {
   adjustBalance, getAllListingsForAdmin, adminResolveListing,
   listGiftCategories, addGiftCategory, deleteGiftCategory,
+  listCurrencies, addCurrency, updateCurrency, deleteCurrency,
+  adjustCurrencyBalance, getAllCurrencyRequestsForAdmin,
 } from './db.js';
 import { sendMessage } from './telegram.js';
 
@@ -269,6 +271,32 @@ router.post('/gift-listings/:id/resolve', (req, res) => {
     sendMessage(action === 'release' ? g.seller_tg_id : g.buyer_tg_id, msg).catch(() => {});
     res.json({ ok: true });
   } catch (e) { res.status(400).json({ error: e.message }); }
+});
+
+/* =========================================================================
+   CURRENCIES — مدیریت ارزهای قابل واریز/برداشت (TON, USDT, ...)
+   ========================================================================= */
+router.get('/currencies', (req, res) => {
+  res.json(listCurrencies(false));
+});
+router.post('/currencies', (req, res) => {
+  const { code, name, icon, deposit_address, deposit_note, min_amount } = req.body;
+  if (!code || !name) return res.status(400).json({ error: 'کد و نام ارز الزامی است' });
+  try { addCurrency(code, name, icon, deposit_address, deposit_note, min_amount); res.json({ ok: true }); }
+  catch (e) { res.status(400).json({ error: 'این کد ارز قبلاً ثبت شده' }); }
+});
+router.patch('/currencies/:code', (req, res) => {
+  try { updateCurrency(req.params.code, req.body); res.json({ ok: true }); }
+  catch (e) { res.status(400).json({ error: e.message }); }
+});
+router.delete('/currencies/:code', (req, res) => {
+  deleteCurrency(req.params.code);
+  res.json({ ok: true });
+});
+
+// تاریخچه‌ی همه‌ی درخواست‌های واریز/برداشت ارزی (برای نظارت — تایید اصلی از داخل ربات انجام می‌شه)
+router.get('/currency-requests', (req, res) => {
+  res.json(getAllCurrencyRequestsForAdmin());
 });
 
 export default router;
