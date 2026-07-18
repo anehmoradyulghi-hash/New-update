@@ -16,6 +16,8 @@ import db, {
   createListing, getListing, getMarketListings, getMyListings, cancelListing, reserveListing, confirmReceived,
   listGiftCategories,
   createManualPayment, getManualPayment, setManualPaymentStatus,
+  listCurrencies, getUserBalances, adjustCurrencyBalance, getCurrencyBalance,
+  createCurrencyRequest, getCurrencyRequest, setCurrencyRequestStatus,
 } from './db.js';
 import adminRouter from './admin.js';
 
@@ -377,6 +379,64 @@ app.post('/api/wallet/card-topup', requireTelegramAuth, async (req, res) => {
   res.json({ ok: true });
 });
 
+/* =========================================================================
+   MULTI-CURRENCY WALLET — TON, USDT و هر ارز دیگه که از پنل تعریف بشه
+   واریز/برداشت با تایید دستی ادمین (بدون هات‌والت خودکار، امن‌تر)
+   ========================================================================= */
+app.get('/api/currencies', (req, res) => {
+  res.json(listCurrencies());
+});
+app.get('/api/wallet/balances', requireTelegramAuth, (req, res) => {
+  res.json(getUserBalances(req.dbUser.tg_id));
+});
+
+app.post('/api/wallet/currency-deposit', requireTelegramAuth, (req, res) => {
+  const { code, amount, txHash } = req.body;
+  const currency = listCurrencies().find(c => c.code === code);
+  if (!currency) return res.status(404).json({ error: 'ارز پیدا نشد' });
+  const amt = Number(amount);
+  if (!amt || amt < currency.min_amount) return res.status(400).json({ error: `حداقل مقدار واریز ${currency.min_amount} ${code} است` });
+  if (!txHash) return res.status(400).json({ error: 'هش تراکنش یا کد رهگیری رو وارد کن' });
+
+  const id = createCurrencyRequest(req.dbUser.tg_id, code, 'deposit', amt, null, txHash);
+  const adminIdsList = (process.env.ADMIN_IDS || '').split(',').map(s => s.trim()).filter(Boolean);
+  const text = `💰 درخواست واریز ${code}\nکاربر: ${req.dbUser.first_name || ''} (${req.dbUser.tg_id})\nمقدار: ${amt} ${code}\nهش تراکنش: ${txHash}`;
+  adminIdsList.forEach(id2 => {
+    sendMessage(id2, text, {
+      reply_markup: { inline_keyboard: [[
+        { text: '✅ تایید و شارژ', callback_data: `approve_cdep:${id}` },
+        { text: '❌ رد', callback_data: `reject_cdep:${id}` },
+      ]] },
+    }).catch(() => {});
+  });
+  res.json({ ok: true });
+});
+
+app.post('/api/wallet/currency-withdraw', requireTelegramAuth, (req, res) => {
+  const { code, amount, address } = req.body;
+  const currency = listCurrencies().find(c => c.code === code);
+  if (!currency) return res.status(404).json({ error: 'ارز پیدا نشد' });
+  const amt = Number(amount);
+  if (!amt || amt <= 0) return res.status(400).json({ error: 'مقدار نامعتبر است' });
+  if (!address) return res.status(400).json({ error: 'آدرس مقصد رو وارد کن' });
+  const balance = getCurrencyBalance(req.dbUser.tg_id, code);
+  if (balance < amt) return res.status(400).json({ error: 'موجودی کافی نیست' });
+
+  adjustCurrencyBalance(req.dbUser.tg_id, code, -amt); // بلوکه فوری تا رسیدگی ادمین
+  const id = createCurrencyRequest(req.dbUser.tg_id, code, 'withdraw', amt, address, null);
+  const adminIdsList = (process.env.ADMIN_IDS || '').split(',').map(s => s.trim()).filter(Boolean);
+  const text = `📤 درخواست برداشت ${code}\nکاربر: ${req.dbUser.first_name || ''} (${req.dbUser.tg_id})\nمقدار: ${amt} ${code}\nآدرس مقصد: ${address}`;
+  adminIdsList.forEach(id2 => {
+    sendMessage(id2, text, {
+      reply_markup: { inline_keyboard: [[
+        { text: '✅ ارسال شد', callback_data: `approve_cwd:${id}` },
+        { text: '❌ رد و برگشت وجه', callback_data: `reject_cwd:${id}` },
+      ]] },
+    }).catch(() => {});
+  });
+  res.json({ ok: true });
+});
+
 // gateway calls this URL back after the user finishes paying (set as ZARINPAL_CALLBACK_URL)
 app.get('/gateway/verify', async (req, res) => {
   const { Authority, Status } = req.query;
@@ -487,6 +547,56 @@ app.post('/telegram-webhook', async (req, res) => {
       setManualPaymentStatus(payment.id, 'rejected');
       await sendMessage(cq.message.chat.id, `❌ درخواست رد شد.`);
       await sendMessage(payment.tg_id, `❌ متاسفانه شارژ کارت‌به‌کارت شما تایید نشد. با پشتیبانی در ارتباط باش.`);
+    }
+    return;
+  }
+
+  // 1d) ادمین دکمه تایید/رد واریز ارزی (TON/USDT/...) رو زده
+  if (update.callback_query?.data?.startsWith('approve_cdep:') || update.callback_query?.data?.startsWith('reject_cdep:')) {
+    const cq = update.callback_query;
+    answerCallbackQuery(cq.id).catch(() => {});
+    if (!isAdmin(cq.from.id)) { answerCallbackQuery(cq.id, 'فقط ادمین اجازه داره').catch(() => {}); return; }
+
+    const [action, idStr] = cq.data.split(':');
+    const reqRow = getCurrencyRequest(idStr);
+    if (!reqRow || reqRow.status !== 'pending') {
+      await sendMessage(cq.message.chat.id, 'این درخواست قبلاً پردازش شده.');
+      return;
+    }
+    if (action === 'approve_cdep') {
+      setCurrencyRequestStatus(reqRow.id, 'approved');
+      adjustCurrencyBalance(reqRow.tg_id, reqRow.currency_code, reqRow.amount);
+      await sendMessage(cq.message.chat.id, `✅ تایید شد و ${reqRow.amount} ${reqRow.currency_code} به کاربر ${reqRow.tg_id} اضافه شد.`);
+      await sendMessage(reqRow.tg_id, `✅ واریز ${reqRow.amount} ${reqRow.currency_code} تایید شد و به کیف‌پولت اضافه شد.`);
+    } else {
+      setCurrencyRequestStatus(reqRow.id, 'rejected');
+      await sendMessage(cq.message.chat.id, `❌ درخواست رد شد.`);
+      await sendMessage(reqRow.tg_id, `❌ واریز ${reqRow.currency_code} شما تایید نشد. با پشتیبانی در ارتباط باش.`);
+    }
+    return;
+  }
+
+  // 1e) ادمین دکمه تایید/رد برداشت ارزی رو زده
+  if (update.callback_query?.data?.startsWith('approve_cwd:') || update.callback_query?.data?.startsWith('reject_cwd:')) {
+    const cq = update.callback_query;
+    answerCallbackQuery(cq.id).catch(() => {});
+    if (!isAdmin(cq.from.id)) { answerCallbackQuery(cq.id, 'فقط ادمین اجازه داره').catch(() => {}); return; }
+
+    const [action, idStr] = cq.data.split(':');
+    const reqRow = getCurrencyRequest(idStr);
+    if (!reqRow || reqRow.status !== 'pending') {
+      await sendMessage(cq.message.chat.id, 'این درخواست قبلاً پردازش شده.');
+      return;
+    }
+    if (action === 'approve_cwd') {
+      setCurrencyRequestStatus(reqRow.id, 'approved'); // موجودی از قبل موقع درخواست کسر شده بود
+      await sendMessage(cq.message.chat.id, `✅ ثبت شد. یادت نره ${reqRow.amount} ${reqRow.currency_code} رو دستی به آدرس زیر بفرستی:\n${reqRow.address}`);
+      await sendMessage(reqRow.tg_id, `✅ برداشت ${reqRow.amount} ${reqRow.currency_code} انجام و ارسال شد.`);
+    } else {
+      setCurrencyRequestStatus(reqRow.id, 'rejected');
+      adjustCurrencyBalance(reqRow.tg_id, reqRow.currency_code, reqRow.amount); // برگشت وجه بلوکه‌شده
+      await sendMessage(cq.message.chat.id, `↩️ درخواست رد شد و موجودی برگشت.`);
+      await sendMessage(reqRow.tg_id, `❌ برداشت ${reqRow.currency_code} شما رد شد و مبلغ به کیف‌پولت برگشت.`);
     }
     return;
   }
