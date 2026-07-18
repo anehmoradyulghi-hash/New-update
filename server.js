@@ -1,5 +1,8 @@
 import 'dotenv/config';
 import express from 'express';
+import multer from 'multer';
+import fs from 'fs';
+import path from 'path';
 import {
   sendMessage, answerPreCheckoutQuery, answerCallbackQuery, createStarsInvoiceLink,
   setWebhook, validateInitData, isChannelMember, getMe,
@@ -11,12 +14,31 @@ import db, {
   settleStake, pendingStakeReward, stakeDeposit, stakeWithdraw,
   listActiveTasks, isTaskDone, completeTask,
   createListing, getListing, getMarketListings, getMyListings, cancelListing, reserveListing, confirmReceived,
+  listGiftCategories,
   createManualPayment, getManualPayment, setManualPaymentStatus,
 } from './db.js';
 import adminRouter from './admin.js';
 
 const app = express();
 app.use(express.json());
+
+// ===================== FILE UPLOAD (real image upload, no links) =====================
+const UPLOAD_DIR = path.join(process.cwd(), 'uploads');
+if (!fs.existsSync(UPLOAD_DIR)) fs.mkdirSync(UPLOAD_DIR, { recursive: true });
+const upload = multer({
+  storage: multer.diskStorage({
+    destination: (req, file, cb) => cb(null, UPLOAD_DIR),
+    filename: (req, file, cb) => cb(null, Date.now() + '-' + Math.round(Math.random() * 1e9) + path.extname(file.originalname)),
+  }),
+  limits: { fileSize: 5 * 1024 * 1024 }, // 5MB
+  fileFilter: (req, file, cb) => cb(null, /image\/(jpeg|png|webp|gif)/.test(file.mimetype)),
+});
+app.use('/uploads', express.static(UPLOAD_DIR));
+
+app.post('/api/upload-image', requireTelegramAuth, upload.single('image'), (req, res) => {
+  if (!req.file) return res.status(400).json({ error: 'فایل عکس ارسال نشد' });
+  res.json({ url: `/uploads/${req.file.filename}` });
+});
 
 app.get('/', (req, res) => res.send('✅ starkadeh backend is running'));
 
@@ -209,6 +231,11 @@ app.get('/api/referral', requireTelegramAuth, (req, res) => {
    ========================================================================= */
 const GIFT_MARKET_FEE = Number(process.env.GIFT_MARKET_FEE_PERCENT || 5); // درصد کارمزد پلتفرم
 
+// دسته‌بندی‌های بازار گیفت (از پنل ادمین مدیریت می‌شن)
+app.get('/api/gift-categories', (req, res) => {
+  res.json(listGiftCategories());
+});
+
 // آگهی‌های خودم (چه فروشنده باشم چه خریدار)
 app.get('/api/gifts/my', requireTelegramAuth, (req, res) => {
   res.json(getMyListings(req.dbUser.tg_id));
@@ -216,10 +243,10 @@ app.get('/api/gifts/my', requireTelegramAuth, (req, res) => {
 
 // آگهی جدید — گیفت واقعی خودم رو برای فروش می‌ذارم
 app.post('/api/gifts/list', requireTelegramAuth, (req, res) => {
-  const { title, image_url, price } = req.body;
+  const { title, image_url, category, price } = req.body;
   const p = Number(price);
   if (!title || !p || p < 5000) return res.status(400).json({ error: 'عنوان و قیمت معتبر لازمه' });
-  const id = createListing(req.dbUser.tg_id, title, image_url, p);
+  const id = createListing(req.dbUser.tg_id, title, image_url, category, p);
   res.json({ ok: true, id });
 });
 
@@ -228,9 +255,9 @@ app.post('/api/gifts/:id/cancel', requireTelegramAuth, (req, res) => {
   catch (e) { res.status(400).json({ error: e.message }); }
 });
 
-// بازار — همه آگهی‌های در دسترس بقیه کاربرا
+// بازار — همه آگهی‌های در دسترس بقیه کاربرا (با فیلتر دسته‌بندی اختیاری)
 app.get('/api/gifts/market', requireTelegramAuth, (req, res) => {
-  res.json({ listings: getMarketListings(req.dbUser.tg_id), feePercent: GIFT_MARKET_FEE });
+  res.json({ listings: getMarketListings(req.dbUser.tg_id, req.query.category), feePercent: GIFT_MARKET_FEE });
 });
 
 // خرید = رزرو + بلوکه شدن پول (امانت) — هنوز به فروشنده واریز نمی‌شه
