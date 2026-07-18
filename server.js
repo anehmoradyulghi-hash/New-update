@@ -18,6 +18,9 @@ import db, {
   createManualPayment, getManualPayment, setManualPaymentStatus,
   listCurrencies, getUserBalances, adjustCurrencyBalance, getCurrencyBalance,
   createCurrencyRequest, getCurrencyRequest, setCurrencyRequestStatus,
+  listGameCards, getGameCard, buyGameCard, getUserCards,
+  getPlaysRemaining, addExtraPlays, joinQueue, getQueueStatus, cancelQueue,
+  getLeaderboard, getMyRank, listLeaderboardPrizes,
 } from './db.js';
 import adminRouter from './admin.js';
 
@@ -435,6 +438,67 @@ app.post('/api/wallet/currency-withdraw', requireTelegramAuth, (req, res) => {
     }).catch(() => {});
   });
   res.json({ ok: true });
+});
+
+/* =========================================================================
+   CARD GAME — فروشگاه کارت، مچ‌سازی ۱به۱، لیدربورد
+   ========================================================================= */
+const GAME_DAILY_LIMIT = Number(process.env.GAME_DAILY_LIMIT || 5);
+const GAME_MIN_DECK_SIZE = Number(process.env.GAME_MIN_DECK_SIZE || 5);
+const GAME_EXTRA_PLAY_PRICE = Number(process.env.GAME_EXTRA_PLAY_PRICE_RIAL || 20000);
+const GAME_EXTRA_PLAY_COUNT = Number(process.env.GAME_EXTRA_PLAY_COUNT || 3);
+
+app.get('/api/game/cards', (req, res) => {
+  res.json(listGameCards());
+});
+app.get('/api/game/my-cards', requireTelegramAuth, (req, res) => {
+  res.json(getUserCards(req.dbUser.tg_id));
+});
+app.post('/api/game/buy-card', requireTelegramAuth, (req, res) => {
+  try { buyGameCard(req.dbUser.tg_id, req.body.cardId); res.json({ ok: true }); }
+  catch (e) { res.status(400).json({ error: e.message }); }
+});
+
+app.get('/api/game/status', requireTelegramAuth, (req, res) => {
+  const remaining = getPlaysRemaining(req.dbUser.tg_id, GAME_DAILY_LIMIT);
+  const q = getQueueStatus(req.dbUser.tg_id);
+  res.json({
+    dailyLimit: GAME_DAILY_LIMIT, playsRemaining: remaining, minDeckSize: GAME_MIN_DECK_SIZE,
+    extraPlayPrice: GAME_EXTRA_PLAY_PRICE, extraPlayCount: GAME_EXTRA_PLAY_COUNT,
+    rank: getMyRank(req.dbUser.tg_id), ...q,
+  });
+});
+app.post('/api/game/buy-extra-plays', requireTelegramAuth, (req, res) => {
+  const user = getUser(req.dbUser.tg_id);
+  if (user.balance_rial < GAME_EXTRA_PLAY_PRICE) return res.status(400).json({ error: 'موجودی کافی نیست' });
+  adjustBalance(user.tg_id, 'rial', -GAME_EXTRA_PLAY_PRICE, 'خرید بازی اضافه');
+  addExtraPlays(user.tg_id, GAME_EXTRA_PLAY_COUNT);
+  res.json({ ok: true, added: GAME_EXTRA_PLAY_COUNT });
+});
+app.post('/api/game/queue', requireTelegramAuth, (req, res) => {
+  const remaining = getPlaysRemaining(req.dbUser.tg_id, GAME_DAILY_LIMIT);
+  if (remaining <= 0) return res.status(400).json({ error: 'سهمیه بازی امروزت تموم شده' });
+  try {
+    const result = joinQueue(req.dbUser.tg_id, req.body.cardIds, GAME_MIN_DECK_SIZE);
+    if (result.matched && result.opponentTgId) {
+      const won = result.won;
+      sendMessage(result.opponentTgId, won
+        ? `⚔️ مسابقه پیدا شد! متاسفانه باختی.\nقدرت تو: ${result.oppPower} | حریف: ${result.myPower}`
+        : `⚔️ مسابقه پیدا شد! بردی 🎉\nقدرت تو: ${result.oppPower} | حریف: ${result.myPower}`
+      ).catch(() => {});
+    }
+    res.json(result);
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
+app.get('/api/game/queue-status', requireTelegramAuth, (req, res) => {
+  res.json(getQueueStatus(req.dbUser.tg_id));
+});
+app.post('/api/game/queue/cancel', requireTelegramAuth, (req, res) => {
+  cancelQueue(req.dbUser.tg_id);
+  res.json({ ok: true });
+});
+app.get('/api/game/leaderboard', (req, res) => {
+  res.json({ rows: getLeaderboard(50), prizes: listLeaderboardPrizes() });
 });
 
 // gateway calls this URL back after the user finishes paying (set as ZARINPAL_CALLBACK_URL)
