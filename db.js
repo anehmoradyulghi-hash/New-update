@@ -44,6 +44,7 @@ CREATE TABLE IF NOT EXISTS gift_listings (
   seller_tg_id INTEGER NOT NULL,
   title TEXT NOT NULL,
   image_url TEXT,
+  category TEXT,
   price_rial INTEGER NOT NULL,
   status TEXT NOT NULL DEFAULT 'listed', -- listed | reserved | completed | cancelled | disputed
   buyer_tg_id INTEGER,
@@ -51,6 +52,12 @@ CREATE TABLE IF NOT EXISTS gift_listings (
   created_at TEXT DEFAULT (datetime('now')),
   reserved_at TEXT,
   completed_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS gift_categories (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT NOT NULL UNIQUE,
+  icon TEXT DEFAULT '🎁'
 );
 
 CREATE TABLE IF NOT EXISTS manual_payments (
@@ -114,6 +121,14 @@ tryAddColumn(`ALTER TABLE orders ADD COLUMN note TEXT`);
 tryAddColumn(`ALTER TABLE users ADD COLUMN staked_rial INTEGER NOT NULL DEFAULT 0`);
 tryAddColumn(`ALTER TABLE users ADD COLUMN stake_started_at TEXT`);
 tryAddColumn(`ALTER TABLE users ADD COLUMN last_spin_at TEXT`);
+tryAddColumn(`ALTER TABLE gift_listings ADD COLUMN category TEXT`);
+
+// دسته‌بندی‌های پیش‌فرض بازار گیفت (فقط یک‌بار)
+const gcSeed = db.prepare('SELECT COUNT(*) c FROM gift_categories').get();
+if (gcSeed.c === 0) {
+  const insertCat = db.prepare('INSERT INTO gift_categories (name, icon) VALUES (?,?)');
+  [['عمومی','🎁'], ['کلکسیونی','💎'], ['محدود','🔥']].forEach(([name, icon]) => insertCat.run(name, icon));
+}
 
 // ===================== SEED PRODUCTS (run once) =====================
 const seed = db.prepare('SELECT COUNT(*) c FROM products').get();
@@ -261,21 +276,38 @@ export default db;
    پول خریدار موقع خرید بلوکه می‌شه (امانت)، فروشنده گیفت رو دستی تو تلگرام می‌فرسته،
    خریدار دریافتش رو تایید می‌کنه و تازه اونوقت پول (منهای کارمزد) آزاد می‌شه.
    ================================================================================== */
-export function createListing(sellerTgId, title, imageUrl, price) {
-  const info = db.prepare(`INSERT INTO gift_listings (seller_tg_id, title, image_url, price_rial) VALUES (?,?,?,?)`)
-    .run(sellerTgId, title, imageUrl || null, price);
+export function createListing(sellerTgId, title, imageUrl, category, price) {
+  const info = db.prepare(`INSERT INTO gift_listings (seller_tg_id, title, image_url, category, price_rial) VALUES (?,?,?,?,?)`)
+    .run(sellerTgId, title, imageUrl || null, category || null, price);
   return info.lastInsertRowid;
 }
 export function getListing(id) {
   return db.prepare('SELECT * FROM gift_listings WHERE id = ?').get(id);
 }
-export function getMarketListings(excludeTgId) {
+export function getMarketListings(excludeTgId, category) {
+  if (category) {
+    return db.prepare(`
+      SELECT g.*, u.username, u.first_name FROM gift_listings g
+      JOIN users u ON u.tg_id = g.seller_tg_id
+      WHERE g.status = 'listed' AND g.seller_tg_id != ? AND g.category = ?
+      ORDER BY g.created_at DESC
+    `).all(excludeTgId, category);
+  }
   return db.prepare(`
     SELECT g.*, u.username, u.first_name FROM gift_listings g
     JOIN users u ON u.tg_id = g.seller_tg_id
     WHERE g.status = 'listed' AND g.seller_tg_id != ?
     ORDER BY g.created_at DESC
   `).all(excludeTgId);
+}
+export function listGiftCategories() {
+  return db.prepare('SELECT * FROM gift_categories ORDER BY id').all();
+}
+export function addGiftCategory(name, icon) {
+  db.prepare('INSERT INTO gift_categories (name, icon) VALUES (?,?)').run(name, icon || '🎁');
+}
+export function deleteGiftCategory(id) {
+  db.prepare('DELETE FROM gift_categories WHERE id = ?').run(id);
 }
 export function getMyListings(tgId) {
   return db.prepare(`
