@@ -69,6 +69,35 @@ CREATE TABLE IF NOT EXISTS manual_payments (
   created_at TEXT DEFAULT (datetime('now'))
 );
 
+CREATE TABLE IF NOT EXISTS currencies (
+  code TEXT PRIMARY KEY,              -- مثلاً TON, USDT
+  name TEXT NOT NULL,
+  icon TEXT DEFAULT '💰',
+  deposit_address TEXT,
+  deposit_note TEXT,                  -- توضیح اضافه (شبکه، مموی و...)
+  min_amount REAL NOT NULL DEFAULT 0,
+  active INTEGER NOT NULL DEFAULT 1
+);
+
+CREATE TABLE IF NOT EXISTS user_balances (
+  tg_id INTEGER NOT NULL,
+  currency_code TEXT NOT NULL,
+  amount REAL NOT NULL DEFAULT 0,
+  PRIMARY KEY (tg_id, currency_code)
+);
+
+CREATE TABLE IF NOT EXISTS currency_requests (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  tg_id INTEGER NOT NULL,
+  currency_code TEXT NOT NULL,
+  type TEXT NOT NULL,                 -- deposit | withdraw
+  amount REAL NOT NULL,
+  address TEXT,                       -- برای withdraw: آدرس مقصد کاربر
+  tx_hash TEXT,                       -- برای deposit: هش تراکنش/کد رهگیری
+  status TEXT NOT NULL DEFAULT 'pending', -- pending | approved | rejected
+  created_at TEXT DEFAULT (datetime('now'))
+);
+
 CREATE TABLE IF NOT EXISTS products (
   id TEXT PRIMARY KEY,
   category TEXT NOT NULL,
@@ -389,4 +418,60 @@ export function getManualPayment(id) {
 }
 export function setManualPaymentStatus(id, status) {
   db.prepare('UPDATE manual_payments SET status = ? WHERE id = ?').run(status, id);
+}
+
+/* ===================== MULTI-CURRENCY WALLET (TON, USDT, هر ارز دیگه) ===================== */
+export function listCurrencies(activeOnly = true) {
+  return activeOnly
+    ? db.prepare('SELECT * FROM currencies WHERE active = 1').all()
+    : db.prepare('SELECT * FROM currencies').all();
+}
+export function addCurrency(code, name, icon, address, note, minAmount) {
+  db.prepare(`INSERT INTO currencies (code, name, icon, deposit_address, deposit_note, min_amount) VALUES (?,?,?,?,?,?)`)
+    .run(code.toUpperCase(), name, icon || '💰', address || null, note || null, minAmount || 0);
+}
+export function updateCurrency(code, fields) {
+  const c = db.prepare('SELECT * FROM currencies WHERE code = ?').get(code);
+  if (!c) throw new Error('ارز پیدا نشد');
+  db.prepare(`UPDATE currencies SET name=?, icon=?, deposit_address=?, deposit_note=?, min_amount=?, active=? WHERE code=?`)
+    .run(fields.name ?? c.name, fields.icon ?? c.icon, fields.deposit_address ?? c.deposit_address,
+         fields.deposit_note ?? c.deposit_note, fields.min_amount ?? c.min_amount, fields.active ?? c.active, code);
+}
+export function deleteCurrency(code) {
+  db.prepare('DELETE FROM currencies WHERE code = ?').run(code);
+}
+export function getUserBalances(tgId) {
+  return db.prepare(`
+    SELECT c.code, c.name, c.icon, COALESCE(b.amount, 0) AS amount
+    FROM currencies c
+    LEFT JOIN user_balances b ON b.currency_code = c.code AND b.tg_id = ?
+    WHERE c.active = 1
+  `).all(tgId);
+}
+export function adjustCurrencyBalance(tgId, code, delta) {
+  db.prepare(`INSERT INTO user_balances (tg_id, currency_code, amount) VALUES (?,?,?)
+    ON CONFLICT(tg_id, currency_code) DO UPDATE SET amount = amount + excluded.amount`)
+    .run(tgId, code, delta);
+}
+export function getCurrencyBalance(tgId, code) {
+  const row = db.prepare('SELECT amount FROM user_balances WHERE tg_id = ? AND currency_code = ?').get(tgId, code);
+  return row ? row.amount : 0;
+}
+export function createCurrencyRequest(tgId, code, type, amount, address, txHash) {
+  const info = db.prepare(`INSERT INTO currency_requests (tg_id, currency_code, type, amount, address, tx_hash) VALUES (?,?,?,?,?,?)`)
+    .run(tgId, code, type, amount, address || null, txHash || null);
+  return info.lastInsertRowid;
+}
+export function getCurrencyRequest(id) {
+  return db.prepare('SELECT * FROM currency_requests WHERE id = ?').get(id);
+}
+export function setCurrencyRequestStatus(id, status) {
+  db.prepare('UPDATE currency_requests SET status = ? WHERE id = ?').run(status, id);
+}
+export function getAllCurrencyRequestsForAdmin() {
+  return db.prepare(`
+    SELECT r.*, u.username, u.first_name FROM currency_requests r
+    JOIN users u ON u.tg_id = r.tg_id
+    ORDER BY r.created_at DESC LIMIT 200
+  `).all();
 }
