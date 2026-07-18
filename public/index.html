@@ -420,6 +420,9 @@
         </div>
       </div>
 
+      <div class="sec-title"><h2>ارزهای دیگه (TON, USDT, ...)</h2></div>
+      <div id="other-currencies-list" style="margin-bottom:22px;"></div>
+
       <div class="sec-title"><h2>تاریخچه تراکنش‌ها</h2></div>
       <div id="tx-list"></div>
     </section>
@@ -661,6 +664,34 @@
       <input class="input-box" id="card-tracking-input" placeholder="کد رهگیری یا ۴ رقم آخر کارتت رو بنویس" style="margin-bottom:0;">
     </div>
     <button class="btn-main" id="topup-confirm-btn" onclick="confirmTopup()">پرداخت و شارژ</button>
+  </div>
+</div>
+
+<!-- ===== CURRENCY DEPOSIT SHEET ===== -->
+<div class="overlay" id="overlay-cur-deposit" onclick="if(event.target===this) closeSheet('overlay-cur-deposit')">
+  <div class="sheet">
+    <div class="sheet-handle"></div>
+    <div class="sheet-title" id="cd-title">واریز <span class="x" onclick="closeSheet('overlay-cur-deposit')">✕</span></div>
+    <div class="link-box" style="margin-bottom:12px;">
+      <span id="cd-address" style="direction:ltr;">—</span>
+      <button class="copy-btn" onclick="copyCurAddress()">کپی</button>
+    </div>
+    <div style="font-size:10.5px; color:var(--text-2); margin-bottom:14px;" id="cd-note"></div>
+    <input class="input-box" id="cd-amount" placeholder="مقدار واریزی…" inputmode="decimal">
+    <input class="input-box" id="cd-txhash" placeholder="هش تراکنش یا کد رهگیری">
+    <button class="btn-main" onclick="confirmCurDeposit()">ثبت درخواست واریز</button>
+  </div>
+</div>
+
+<!-- ===== CURRENCY WITHDRAW SHEET ===== -->
+<div class="overlay" id="overlay-cur-withdraw" onclick="if(event.target===this) closeSheet('overlay-cur-withdraw')">
+  <div class="sheet">
+    <div class="sheet-handle"></div>
+    <div class="sheet-title" id="cw-title">برداشت <span class="x" onclick="closeSheet('overlay-cur-withdraw')">✕</span></div>
+    <div style="font-size:11.5px; color:var(--text-2); margin-bottom:10px; font-weight:600;" id="cw-balance"></div>
+    <input class="input-box" id="cw-amount" placeholder="مقدار برداشت…" inputmode="decimal">
+    <input class="input-box" id="cw-address" placeholder="آدرس مقصد">
+    <button class="btn-main" onclick="confirmCurWithdraw()">ثبت درخواست برداشت</button>
   </div>
 </div>
 
@@ -1082,6 +1113,7 @@ async function confirmTopup(){
 async function renderWallet(){
   document.getElementById('wallet-rial').textContent = fmt(state.balanceRial);
   document.getElementById('wallet-stars').textContent = fmt(state.balanceStars);
+  renderOtherCurrencies();
   const field = document.getElementById('stars-field');
   if(!field.dataset.built){
     field.dataset.built = '1';
@@ -1116,6 +1148,79 @@ async function refreshMe(){
 function updateHeaderChip(){
   document.getElementById('hdr-stars').textContent = fmt(state.balanceStars);
   document.getElementById('hdr-rial').textContent = fmt(state.balanceRial) + ' ت';
+}
+
+/* ===================== OTHER CURRENCIES (TON, USDT, ...) ===================== */
+let curDefs = [];
+let curSelected = null;
+async function renderOtherCurrencies(){
+  const wrap = document.getElementById('other-currencies-list');
+  wrap.innerHTML = `<div class="empty"><p>در حال بارگذاری…</p></div>`;
+  try {
+    const [defs, balances] = await Promise.all([ api('/api/currencies'), api('/api/wallet/balances') ]);
+    curDefs = defs;
+    if (!defs.length) { wrap.innerHTML = `<div class="empty"><p>ارزی تعریف نشده</p></div>`; return; }
+    wrap.innerHTML = balances.map(b => `
+      <div class="tx-item" style="border:1px solid var(--border); border-radius:12px; padding:12px; margin-bottom:8px; border-bottom:1px solid var(--border);">
+        <div class="tx-icon in">${b.icon}</div>
+        <div class="tx-mid"><div class="t1">${b.name}</div><div class="t2">${b.amount} ${b.code}</div></div>
+        <div style="display:flex; gap:6px;">
+          <button class="wbtn primary" style="padding:8px 12px;" onclick="openCurDeposit('${b.code}')">واریز</button>
+          <button class="wbtn" style="padding:8px 12px;" onclick="openCurWithdraw('${b.code}', ${b.amount})">برداشت</button>
+        </div>
+      </div>
+    `).join('');
+  } catch (e) { showToast('❌ ' + e.message); }
+}
+function openCurDeposit(code){
+  curSelected = curDefs.find(c => c.code === code);
+  if (!curSelected) return;
+  document.getElementById('cd-title').innerHTML = `واریز ${curSelected.name} <span class="x" onclick="closeSheet('overlay-cur-deposit')">✕</span>`;
+  document.getElementById('cd-address').textContent = curSelected.deposit_address || 'آدرس هنوز تنظیم نشده';
+  document.getElementById('cd-note').textContent = (curSelected.deposit_note || '') + (curSelected.min_amount ? ` — حداقل واریز: ${curSelected.min_amount} ${code}` : '');
+  document.getElementById('cd-amount').value = '';
+  document.getElementById('cd-txhash').value = '';
+  openSheet('overlay-cur-deposit');
+}
+function copyCurAddress(){
+  const addr = document.getElementById('cd-address').textContent;
+  if (navigator.clipboard) navigator.clipboard.writeText(addr).catch(()=>{});
+  haptic('medium');
+  showToast('📋 آدرس کپی شد');
+}
+async function confirmCurDeposit(){
+  const amount = Number(document.getElementById('cd-amount').value);
+  const txHash = document.getElementById('cd-txhash').value.trim();
+  if (!amount || amount <= 0) { showToast('❌ مقدار معتبر وارد کن'); return; }
+  if (!txHash) { showToast('❌ هش تراکنش یا کد رهگیری رو وارد کن'); return; }
+  try {
+    await api('/api/wallet/currency-deposit', { method:'POST', body: JSON.stringify({ code: curSelected.code, amount, txHash }) });
+    closeSheet('overlay-cur-deposit');
+    haptic('heavy');
+    showToast('✅ درخواستت ثبت شد، منتظر تایید ادمین باش');
+  } catch (e) { showToast('❌ ' + e.message); }
+}
+function openCurWithdraw(code, balance){
+  curSelected = curDefs.find(c => c.code === code);
+  if (!curSelected) return;
+  document.getElementById('cw-title').innerHTML = `برداشت ${curSelected.name} <span class="x" onclick="closeSheet('overlay-cur-withdraw')">✕</span>`;
+  document.getElementById('cw-balance').textContent = `موجودی فعلی: ${balance} ${code}`;
+  document.getElementById('cw-amount').value = '';
+  document.getElementById('cw-address').value = '';
+  openSheet('overlay-cur-withdraw');
+}
+async function confirmCurWithdraw(){
+  const amount = Number(document.getElementById('cw-amount').value);
+  const address = document.getElementById('cw-address').value.trim();
+  if (!amount || amount <= 0) { showToast('❌ مقدار معتبر وارد کن'); return; }
+  if (!address) { showToast('❌ آدرس مقصد رو وارد کن'); return; }
+  try {
+    await api('/api/wallet/currency-withdraw', { method:'POST', body: JSON.stringify({ code: curSelected.code, amount, address }) });
+    closeSheet('overlay-cur-withdraw');
+    await renderOtherCurrencies();
+    haptic('heavy');
+    showToast('✅ درخواست برداشت ثبت شد، منتظر تایید ادمین باش');
+  } catch (e) { showToast('❌ ' + e.message); }
 }
 
 /* ===================== REFERRAL PAGE ===================== */
