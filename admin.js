@@ -308,10 +308,13 @@ router.get('/game-cards', (req, res) => {
   res.json(listGameCards(false));
 });
 router.post('/game-cards', (req, res) => {
-  const { id, name, image_url, power, description, currency_code, price } = req.body;
+  const { id, name, image_url, power, description, currency_code, price, upgrade_cost, upgrade_currency, max_level, power_per_level } = req.body;
   if (!id || !name || !currency_code) return res.status(400).json({ error: 'شناسه، نام و ارز الزامیه' });
-  try { addGameCard(id, name, image_url, Number(power) || 10, description, currency_code, Number(price) || 0); res.json({ ok: true }); }
-  catch (e) { res.status(400).json({ error: 'این شناسه قبلاً استفاده شده' }); }
+  try {
+    addGameCard(id, name, image_url, Number(power) || 10, description, currency_code, Number(price) || 0,
+      Number(upgrade_cost) || 0, upgrade_currency || 'RIAL', Number(max_level) || 5, Number(power_per_level) || 5);
+    res.json({ ok: true });
+  } catch (e) { res.status(400).json({ error: 'این شناسه قبلاً استفاده شده' }); }
 });
 router.patch('/game-cards/:id', (req, res) => {
   try { updateGameCard(req.params.id, req.body); res.json({ ok: true }); }
