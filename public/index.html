@@ -178,11 +178,11 @@
     border-top:1px solid var(--border); padding:9px 6px 12px; z-index:40;
   }
   .tab{
-    display:flex; flex-direction:column; align-items:center; gap:3px;
+    display:flex; flex-direction:column; align-items:center; gap:2px;
     background:none; border:none; color:var(--text-2); font-family:inherit;
-    font-size:10.5px; font-weight:600; cursor:pointer; padding:4px 14px; position:relative;
+    font-size:9px; font-weight:600; cursor:pointer; padding:4px 6px; position:relative; white-space:nowrap;
   }
-  .tab svg{width:21px; height:21px; stroke:var(--text-2); fill:none; stroke-width:1.8;}
+  .tab svg{width:19px; height:19px; stroke:var(--text-2); fill:none; stroke-width:1.8;}
   .tab.active{color:var(--text-0);}
   .tab.active svg{stroke:var(--gold-1);}
   .tab .dot{position:absolute; top:-1px; left:22px; width:7px; height:7px; border-radius:50%; background:var(--danger); display:none;}
@@ -473,11 +473,6 @@
           <div class="li-text">تسک‌ها و جایزه‌ها</div>
           <div class="chev">‹</div>
         </div>
-        <div class="list-row" onclick="goTo('giftmarket')">
-          <div class="li-icon">🎁</div>
-          <div class="li-text">بازار گیفت کاربران</div>
-          <div class="chev">‹</div>
-        </div>
         <div class="list-row" onclick="goTo('referral')">
           <div class="li-icon">🤝</div>
           <div class="li-text">زیرمجموعه‌گیری</div>
@@ -571,10 +566,11 @@
       <div style="font-size:10.5px; color:var(--text-2); margin-bottom:12px; line-height:1.8;">
         اینجا گیفت‌های واقعی تلگرامتو می‌تونی بفروشی. پول خریدار امانت می‌مونه تا خودش تایید کنه گیفت رو گرفته، بعد آزاد می‌شه به تو.
       </div>
-      <div class="chips" style="margin-bottom:14px;">
+      <div class="chips" style="margin-bottom:10px;">
         <button class="chip active" id="gm-tab-market" onclick="switchGiftMarketTab('market')">🛍 بازار</button>
         <button class="chip" id="gm-tab-mine" onclick="switchGiftMarketTab('mine')">🎒 معاملات من</button>
       </div>
+      <div class="chips" id="gm-category-chips" style="margin-bottom:14px;"></div>
       <div id="gm-content"></div>
     </section>
 
@@ -603,6 +599,10 @@
       <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 3"/></svg>
       بازی‌ها
       <span class="dot" id="wheel-dot"></span>
+    </button>
+    <button class="tab" data-tab="giftmarket" onclick="goTo('giftmarket')">
+      <svg viewBox="0 0 24 24"><rect x="3" y="8" width="18" height="13" rx="2"/><path d="M3 8l9-5 9 5"/><path d="M12 3v18"/></svg>
+      بازار گیفت
     </button>
     <button class="tab" data-tab="profile" onclick="goTo('profile')">
       <svg viewBox="0 0 24 24"><circle cx="12" cy="8" r="3.4"/><path d="M4.5 20c0-4 3.4-6.5 7.5-6.5s7.5 2.5 7.5 6.5"/></svg>
@@ -676,8 +676,14 @@
       <input class="input-box" id="list-gift-title" placeholder="مثلاً: Diamond Ring" style="margin-bottom:0;">
     </div>
     <div class="field" style="text-align:right; margin-bottom:14px;">
-      <label style="font-size:11.5px; color:var(--text-1); font-weight:600; display:block; margin-bottom:6px;">لینک عکس (اختیاری)</label>
-      <input class="input-box" id="list-gift-image" placeholder="https://…" style="margin-bottom:0;">
+      <label style="font-size:11.5px; color:var(--text-1); font-weight:600; display:block; margin-bottom:6px;">دسته‌بندی</label>
+      <select id="list-gift-category" class="input-box" style="margin-bottom:0;"></select>
+    </div>
+    <div class="field" style="text-align:right; margin-bottom:14px;">
+      <label style="font-size:11.5px; color:var(--text-1); font-weight:600; display:block; margin-bottom:6px;">عکس گیفت</label>
+      <input type="file" accept="image/*" id="list-gift-image-file" onchange="uploadGiftImage(this)">
+      <input type="hidden" id="list-gift-image">
+      <div id="list-gift-image-preview" style="margin-top:8px;"></div>
     </div>
     <div class="field" style="text-align:right; margin-bottom:6px;">
       <label style="font-size:11.5px; color:var(--text-1); font-weight:600; display:block; margin-bottom:6px;">قیمت (تومان)</label>
@@ -1261,17 +1267,39 @@ function openCommunityLink(type){
 
 /* ===================== GIFT MARKET (P2P, escrow-based) ===================== */
 let gmTab = 'market';
+let gmCategories = [];
+let gmSelectedCategory = '';
+
+async function loadGiftCategories(){
+  if (gmCategories.length) return gmCategories;
+  try { gmCategories = await api('/api/gift-categories'); } catch(e) { gmCategories = []; }
+  return gmCategories;
+}
+async function renderGmCategoryChips(){
+  await loadGiftCategories();
+  const wrap = document.getElementById('gm-category-chips');
+  if (gmTab !== 'market') { wrap.innerHTML = ''; return; }
+  wrap.innerHTML = `<button class="chip ${!gmSelectedCategory?'active':''}" onclick="filterGiftCategory('')">همه</button>` +
+    gmCategories.map(c => `<button class="chip ${gmSelectedCategory===c.name?'active':''}" onclick="filterGiftCategory('${c.name}')">${c.icon} ${c.name}</button>`).join('');
+}
+function filterGiftCategory(name){
+  gmSelectedCategory = name;
+  renderGmCategoryChips();
+  renderGiftMarket();
+}
 function switchGiftMarketTab(tab){
   gmTab = tab;
   document.getElementById('gm-tab-market').classList.toggle('active', tab==='market');
   document.getElementById('gm-tab-mine').classList.toggle('active', tab==='mine');
+  renderGmCategoryChips();
   tab==='market' ? renderGiftMarket() : renderMyListings();
 }
 async function renderGiftMarket(){
   const wrap = document.getElementById('gm-content');
   wrap.innerHTML = `<div class="empty"><p>در حال بارگذاری…</p></div>`;
   try {
-    const { listings, feePercent } = await api('/api/gifts/market');
+    const q = gmSelectedCategory ? `?category=${encodeURIComponent(gmSelectedCategory)}` : '';
+    const { listings, feePercent } = await api('/api/gifts/market' + q);
     wrap.innerHTML = listings.length ? `
       <div style="font-size:10.5px; color:var(--text-2); margin-bottom:10px;">کارمزد پلتفرم روی هر فروش: ${feePercent}٪ — پولت تا وقتی گیفت رو نگیری آزاد نمی‌شه</div>
       <div class="grid">
@@ -1287,7 +1315,7 @@ async function renderGiftMarket(){
           </div>
         `).join('')}
       </div>
-    ` : `<div class="empty"><div class="e-icon">🎁</div><p>فعلاً آگهی‌ای تو بازار نیست</p></div>`;
+    ` : `<div class="empty"><div class="e-icon">🎁</div><p>فعلاً آگهی‌ای تو این بخش نیست</p></div>`;
   } catch (e) { showToast('❌ ' + e.message); }
 }
 async function buyMarketGift(id){
@@ -1335,20 +1363,37 @@ async function confirmGiftReceived(id){
     showToast('✅ تایید شد، پول به فروشنده واریز شد');
   } catch (e) { showToast('❌ ' + e.message); }
 }
-function openAddListing(){
+async function uploadGiftImage(input){
+  if (!input.files[0]) return;
+  const fd = new FormData();
+  fd.append('image', input.files[0]);
+  try {
+    const res = await fetch('/api/upload-image', { method:'POST', headers:{ 'X-Init-Data': tg ? tg.initData : '' }, body: fd });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'خطای آپلود');
+    document.getElementById('list-gift-image').value = data.url;
+    document.getElementById('list-gift-image-preview').innerHTML = `<img src="${data.url}" style="width:100%; max-height:120px; object-fit:cover; border-radius:10px;">`;
+    showToast('✅ عکس آپلود شد');
+  } catch (e) { showToast('❌ ' + e.message); }
+}
+async function openAddListing(){
   document.getElementById('list-gift-title').value = '';
   document.getElementById('list-gift-image').value = '';
+  document.getElementById('list-gift-image-preview').innerHTML = '';
   document.getElementById('list-gift-price').value = '';
+  await loadGiftCategories();
+  document.getElementById('list-gift-category').innerHTML = gmCategories.map(c => `<option value="${c.name}">${c.icon} ${c.name}</option>`).join('');
   openSheet('overlay-list-gift');
 }
 async function confirmListGift(){
   const title = document.getElementById('list-gift-title').value.trim();
   const image_url = document.getElementById('list-gift-image').value.trim();
+  const category = document.getElementById('list-gift-category').value;
   const price = Number(document.getElementById('list-gift-price').value.replace(/[^\d]/g,''));
   if (!title) { showToast('❌ اسم گیفت رو بنویس'); return; }
   if (!price || price < 5000) { showToast('❌ قیمت معتبر وارد کن'); return; }
   try {
-    await api('/api/gifts/list', { method:'POST', body: JSON.stringify({ title, image_url, price }) });
+    await api('/api/gifts/list', { method:'POST', body: JSON.stringify({ title, image_url, category, price }) });
     closeSheet('overlay-list-gift');
     await renderMyListings();
     haptic('heavy');
