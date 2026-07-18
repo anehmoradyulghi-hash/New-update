@@ -98,6 +98,58 @@ CREATE TABLE IF NOT EXISTS currency_requests (
   created_at TEXT DEFAULT (datetime('now'))
 );
 
+CREATE TABLE IF NOT EXISTS game_cards (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  image_url TEXT,
+  power INTEGER NOT NULL DEFAULT 10,
+  description TEXT,
+  currency_code TEXT NOT NULL DEFAULT 'RIAL', -- RIAL | STARS | کد ارز دیگه از جدول currencies
+  price REAL NOT NULL DEFAULT 0,
+  active INTEGER NOT NULL DEFAULT 1,
+  created_at TEXT DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS user_cards (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  tg_id INTEGER NOT NULL,
+  card_id TEXT NOT NULL,
+  acquired_at TEXT DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS game_queue (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  tg_id INTEGER NOT NULL,
+  card_ids TEXT NOT NULL,     -- JSON array از user_cards.id
+  power INTEGER NOT NULL,
+  status TEXT NOT NULL DEFAULT 'waiting', -- waiting | matched | expired | cancelled
+  created_at TEXT DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS game_matches (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  player1_tg_id INTEGER NOT NULL,
+  player2_tg_id INTEGER NOT NULL,
+  player1_power INTEGER NOT NULL,
+  player2_power INTEGER NOT NULL,
+  winner_tg_id INTEGER,
+  created_at TEXT DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS game_scores (
+  tg_id INTEGER PRIMARY KEY,
+  points INTEGER NOT NULL DEFAULT 0,
+  wins INTEGER NOT NULL DEFAULT 0,
+  losses INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS leaderboard_prizes (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  rank_from INTEGER NOT NULL,
+  rank_to INTEGER NOT NULL,
+  prize_text TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS products (
   id TEXT PRIMARY KEY,
   category TEXT NOT NULL,
@@ -150,6 +202,10 @@ tryAddColumn(`ALTER TABLE orders ADD COLUMN note TEXT`);
 tryAddColumn(`ALTER TABLE users ADD COLUMN staked_rial INTEGER NOT NULL DEFAULT 0`);
 tryAddColumn(`ALTER TABLE users ADD COLUMN stake_started_at TEXT`);
 tryAddColumn(`ALTER TABLE users ADD COLUMN last_spin_at TEXT`);
+tryAddColumn(`ALTER TABLE users ADD COLUMN matches_played_today INTEGER NOT NULL DEFAULT 0`);
+tryAddColumn(`ALTER TABLE users ADD COLUMN extra_plays INTEGER NOT NULL DEFAULT 0`);
+tryAddColumn(`ALTER TABLE users ADD COLUMN last_match_date TEXT`);
+tryAddColumn(`ALTER TABLE tasks ADD COLUMN reward_card_id TEXT`);
 tryAddColumn(`ALTER TABLE gift_listings ADD COLUMN category TEXT`);
 
 // دسته‌بندی‌های پیش‌فرض بازار گیفت (فقط یک‌بار)
@@ -296,9 +352,193 @@ export function completeTask(tgId, task) {
   db.prepare('INSERT OR IGNORE INTO task_completions (tg_id, task_id) VALUES (?,?)').run(tgId, task.id);
   if (task.reward_rial) adjustBalance(tgId, 'rial', task.reward_rial, `پاداش تسک: ${task.title}`);
   if (task.reward_stars) adjustBalance(tgId, 'stars', task.reward_stars, `پاداش تسک: ${task.title}`);
+  if (task.reward_card_id) db.prepare('INSERT INTO user_cards (tg_id, card_id) VALUES (?,?)').run(tgId, task.reward_card_id);
 }
 
 export default db;
+
+/* ===================== CARD GAME (shop, matchmaking, leaderboard) ===================== */
+
+// ---- shop / cards ----
+export function listGameCards(activeOnly = true) {
+  return activeOnly
+    ? db.prepare('SELECT * FROM game_cards WHERE active = 1 ORDER BY power DESC').all()
+    : db.prepare('SELECT * FROM game_cards ORDER BY created_at DESC').all();
+}
+export function getGameCard(id) {
+  return db.prepare('SELECT * FROM game_cards WHERE id = ?').get(id);
+}
+export function addGameCard(id, name, imageUrl, power, description, currencyCode, price) {
+  db.prepare(`INSERT INTO game_cards (id, name, image_url, power, description, currency_code, price) VALUES (?,?,?,?,?,?,?)`)
+    .run(id, name, imageUrl || null, power, description || '', currencyCode, price);
+}
+export function updateGameCard(id, fields) {
+  const c = getGameCard(id);
+  if (!c) throw new Error('کارت پیدا نشد');
+  db.prepare(`UPDATE game_cards SET name=?, image_url=?, power=?, description=?, currency_code=?, price=?, active=? WHERE id=?`)
+    .run(fields.name ?? c.name, fields.image_url ?? c.image_url, fields.power ?? c.power, fields.description ?? c.description,
+         fields.currency_code ?? c.currency_code, fields.price ?? c.price, fields.active ?? c.active, id);
+}
+export function deleteGameCard(id) {
+  db.prepare('DELETE FROM game_cards WHERE id = ?').run(id);
+}
+
+// ---- inventory ----
+export function grantCard(tgId, cardId) {
+  db.prepare('INSERT INTO user_cards (tg_id, card_id) VALUES (?,?)').run(tgId, cardId);
+}
+export function getUserCards(tgId) {
+  return db.prepare(`
+    SELECT uc.id AS user_card_id, uc.acquired_at, c.*
+    FROM user_cards uc JOIN game_cards c ON c.id = uc.card_id
+    WHERE uc.tg_id = ? ORDER BY uc.acquired_at DESC
+  `).all(tgId);
+}
+// می‌خرد و مستقیم به کیف‌پول (ریال/استارز/ارز دیگه) وصل می‌شه؛ خرید فوریه چون قیمت‌ها از قبل مشخصن
+export function buyGameCard(tgId, cardId) {
+  const card = getGameCard(cardId);
+  if (!card || !card.active) throw new Error('کارت در دسترس نیست');
+  if (card.currency_code === 'RIAL') {
+    const user = getUser(tgId);
+    if (user.balance_rial < card.price) throw new Error('موجودی ریالی کافی نیست');
+    adjustBalance(tgId, 'rial', -card.price, `خرید کارت «${card.name}»`);
+  } else if (card.currency_code === 'STARS') {
+    const user = getUser(tgId);
+    if (user.balance_stars < card.price) throw new Error('موجودی استارز کافی نیست');
+    adjustBalance(tgId, 'stars', -card.price, `خرید کارت «${card.name}»`);
+  } else {
+    const bal = getCurrencyBalance(tgId, card.currency_code);
+    if (bal < card.price) throw new Error(`موجودی ${card.currency_code} کافی نیست`);
+    adjustCurrencyBalance(tgId, card.currency_code, -card.price);
+  }
+  grantCard(tgId, cardId);
+}
+
+// ---- daily play limit ----
+function todayStr() { return new Date().toISOString().slice(0, 10); }
+export function ensureDailyReset(tgId) {
+  const user = getUser(tgId);
+  if (user.last_match_date !== todayStr()) {
+    db.prepare(`UPDATE users SET matches_played_today = 0, extra_plays = 0, last_match_date = ? WHERE tg_id = ?`).run(todayStr(), tgId);
+  }
+  return getUser(tgId);
+}
+export function getPlaysRemaining(tgId, dailyLimit) {
+  const user = ensureDailyReset(tgId);
+  const total = dailyLimit + user.extra_plays;
+  return Math.max(0, total - user.matches_played_today);
+}
+export function addExtraPlays(tgId, count) {
+  ensureDailyReset(tgId);
+  db.prepare('UPDATE users SET extra_plays = extra_plays + ? WHERE tg_id = ?').run(count, tgId);
+}
+function incrementPlaysUsed(tgId) {
+  db.prepare('UPDATE users SET matches_played_today = matches_played_today + 1 WHERE tg_id = ?').run(tgId);
+}
+
+// ---- matchmaking (async: whoever joins second instantly resolves the match) ----
+export function joinQueue(tgId, userCardIds, minDeckSize) {
+  if (!Array.isArray(userCardIds) || userCardIds.length < minDeckSize) {
+    throw new Error(`حداقل ${minDeckSize} کارت باید انتخاب کنی`);
+  }
+  const owned = db.prepare(`SELECT id, card_id FROM user_cards WHERE tg_id = ? AND id IN (${userCardIds.map(() => '?').join(',')})`)
+    .all(tgId, ...userCardIds);
+  if (owned.length !== userCardIds.length) throw new Error('یکی از کارت‌ها مال تو نیست');
+
+  const power = owned.reduce((sum, uc) => {
+    const card = getGameCard(uc.card_id);
+    return sum + (card ? card.power : 0);
+  }, 0);
+
+  // پاک کردن صف‌های منقضی‌شده (بیشتر از ۵ دقیقه)
+  db.prepare(`UPDATE game_queue SET status = 'expired' WHERE status = 'waiting' AND created_at < datetime('now','-5 minutes')`).run();
+
+  const opponent = db.prepare(`SELECT * FROM game_queue WHERE status = 'waiting' AND tg_id != ? ORDER BY created_at ASC LIMIT 1`).get(tgId);
+
+  if (opponent) {
+    // مچ فوری
+    const myPower = power + Math.floor(power * (Math.random() * 0.3 - 0.15)); // ±15% شانس
+    const oppPower = opponent.power + Math.floor(opponent.power * (Math.random() * 0.3 - 0.15));
+    const winnerTgId = myPower >= oppPower ? tgId : opponent.tg_id;
+
+    db.prepare(`UPDATE game_queue SET status = 'matched' WHERE id = ?`).run(opponent.id);
+    const info = db.prepare(`INSERT INTO game_matches (player1_tg_id, player2_tg_id, player1_power, player2_power, winner_tg_id) VALUES (?,?,?,?,?)`)
+      .run(opponent.tg_id, tgId, oppPower, myPower, winnerTgId);
+
+    bumpScore(opponent.tg_id, opponent.tg_id === winnerTgId);
+    bumpScore(tgId, tgId === winnerTgId);
+    incrementPlaysUsed(opponent.tg_id);
+    incrementPlaysUsed(tgId);
+
+    return {
+      matched: true, matchId: info.lastInsertRowid,
+      won: tgId === winnerTgId, myPower, oppPower, opponentTgId: opponent.tg_id,
+    };
+  }
+
+  const info = db.prepare(`INSERT INTO game_queue (tg_id, card_ids, power) VALUES (?,?,?)`)
+    .run(tgId, JSON.stringify(userCardIds), power);
+  return { matched: false, queueId: info.lastInsertRowid };
+}
+export function getQueueStatus(tgId) {
+  const row = db.prepare(`SELECT * FROM game_queue WHERE tg_id = ? ORDER BY created_at DESC LIMIT 1`).get(tgId);
+  if (!row) return { inQueue: false };
+  if (row.status === 'waiting') {
+    const expired = new Date(row.created_at + 'Z').getTime() + 5 * 60 * 1000 < Date.now();
+    if (expired) {
+      db.prepare(`UPDATE game_queue SET status = 'expired' WHERE id = ?`).run(row.id);
+      return { inQueue: false, expired: true };
+    }
+    return { inQueue: true };
+  }
+  if (row.status === 'matched') {
+    // آخرین مسابقه‌ای که این کاربر توش شرکت داشته
+    const match = db.prepare(`SELECT * FROM game_matches WHERE player1_tg_id = ? OR player2_tg_id = ? ORDER BY created_at DESC LIMIT 1`).get(tgId, tgId);
+    if (match) {
+      const iAmP1 = match.player1_tg_id === Number(tgId);
+      return {
+        inQueue: false, justMatched: true,
+        won: match.winner_tg_id === Number(tgId),
+        myPower: iAmP1 ? match.player1_power : match.player2_power,
+        oppPower: iAmP1 ? match.player2_power : match.player1_power,
+      };
+    }
+  }
+  return { inQueue: false };
+}
+export function cancelQueue(tgId) {
+  db.prepare(`UPDATE game_queue SET status = 'cancelled' WHERE tg_id = ? AND status = 'waiting'`).run(tgId);
+}
+
+// ---- scores / leaderboard ----
+function bumpScore(tgId, won) {
+  db.prepare(`INSERT INTO game_scores (tg_id, points, wins, losses) VALUES (?,?,?,?)
+    ON CONFLICT(tg_id) DO UPDATE SET points = points + excluded.points, wins = wins + excluded.wins, losses = losses + excluded.losses`)
+    .run(tgId, won ? 3 : 1, won ? 1 : 0, won ? 0 : 1);
+}
+export function getLeaderboard(limit = 50) {
+  return db.prepare(`
+    SELECT s.*, u.username, u.first_name FROM game_scores s
+    JOIN users u ON u.tg_id = s.tg_id
+    ORDER BY s.points DESC LIMIT ?
+  `).all(limit);
+}
+export function getMyRank(tgId) {
+  const row = db.prepare(`
+    SELECT COUNT(*) + 1 AS rank FROM game_scores
+    WHERE points > (SELECT points FROM game_scores WHERE tg_id = ?)
+  `).get(tgId);
+  return row.rank;
+}
+export function listLeaderboardPrizes() {
+  return db.prepare('SELECT * FROM leaderboard_prizes ORDER BY rank_from').all();
+}
+export function addLeaderboardPrize(rankFrom, rankTo, text) {
+  db.prepare('INSERT INTO leaderboard_prizes (rank_from, rank_to, prize_text) VALUES (?,?,?)').run(rankFrom, rankTo, text);
+}
+export function deleteLeaderboardPrize(id) {
+  db.prepare('DELETE FROM leaderboard_prizes WHERE id = ?').run(id);
+}
 
 /* ===================== GIFT MARKET (P2P, escrow-based — مثل پرتال) =====================
    کاربر گیفت واقعی خودش رو (که تو تلگرام داره) اینجا لیست می‌کنه.
