@@ -542,6 +542,11 @@
       </div>
 
       <div class="list-card" style="margin-top:16px;">
+        <div class="list-row" onclick="goTo('cardgame')">
+          <div class="li-icon">🃏</div>
+          <div class="li-text">نبرد کارتی + لیدربورد</div>
+          <div class="chev">‹</div>
+        </div>
         <div class="list-row" onclick="openCommunityLink('channel')">
           <div class="li-icon">📢</div>
           <div class="li-text">عضویت در کانال ما</div>
@@ -558,6 +563,20 @@
           <div class="chev">‹</div>
         </div>
       </div>
+    </section>
+
+    <!-- ============ CARD GAME ============ -->
+    <section class="page" id="page-cardgame">
+      <div class="sec-title" style="margin-top:4px;">
+        <h2>🃏 نبرد کارتی</h2>
+        <span class="more" id="cg-status-label"></span>
+      </div>
+      <div class="chips" style="margin-bottom:14px;">
+        <button class="chip active" id="cg-tab-shop" onclick="switchCardGameTab('shop')">🛍 فروشگاه</button>
+        <button class="chip" id="cg-tab-battle" onclick="switchCardGameTab('battle')">⚔️ نبرد</button>
+        <button class="chip" id="cg-tab-board" onclick="switchCardGameTab('board')">🏆 لیدربورد</button>
+      </div>
+      <div id="cg-content"></div>
     </section>
 
     <!-- ============ GIFT MARKET (P2P) ============ -->
@@ -878,6 +897,7 @@ function goTo(page){
   if(page==='tasks') renderTasksPage();
   if(page==='games') renderGames();
   if(page==='giftmarket') { gmTab='market'; switchGiftMarketTab('market'); }
+  if(page==='cardgame') { cgTab='shop'; switchCardGameTab('shop'); }
   window.scrollTo(0,0);
   haptic('light');
 }
@@ -1503,6 +1523,169 @@ async function confirmListGift(){
     await renderMyListings();
     haptic('heavy');
     showToast('✅ آگهی ثبت شد');
+  } catch (e) { showToast('❌ ' + e.message); }
+}
+
+/* ===================== CARD GAME ===================== */
+let cgTab = 'shop';
+let cgMyCards = [];
+let cgDeckSelection = new Set();
+let cgQueuePoll = null;
+
+function switchCardGameTab(tab){
+  cgTab = tab;
+  document.getElementById('cg-tab-shop').classList.toggle('active', tab==='shop');
+  document.getElementById('cg-tab-battle').classList.toggle('active', tab==='battle');
+  document.getElementById('cg-tab-board').classList.toggle('active', tab==='board');
+  if (tab==='shop') renderCgShop();
+  if (tab==='battle') renderCgBattle();
+  if (tab==='board') renderCgBoard();
+}
+
+async function renderCgShop(){
+  const wrap = document.getElementById('cg-content');
+  wrap.innerHTML = `<div class="empty"><p>در حال بارگذاری…</p></div>`;
+  try {
+    const cards = await api('/api/game/cards');
+    wrap.innerHTML = cards.length ? `<div class="grid">${cards.map(c => `
+      <div class="pcard">
+        ${c.image_url ? `<img src="${c.image_url}" style="width:100%; height:74px; object-fit:cover; border-radius:10px;">` : `<div class="picon">🃏</div>`}
+        <div class="pname">${c.name}</div>
+        <div class="pdesc">قدرت: ${c.power} — ${c.description||''}</div>
+        <div class="prow">
+          <div class="price">${fmt(c.price)}<small> ${c.currency_code}</small></div>
+          <button class="addbtn" onclick="buyGameCard('${c.id}')">🛒</button>
+        </div>
+      </div>
+    `).join('')}</div>` : `<div class="empty"><div class="e-icon">🃏</div><p>فعلاً کارتی تو فروشگاه نیست</p></div>`;
+  } catch (e) { showToast('❌ ' + e.message); }
+}
+async function buyGameCard(id){
+  try {
+    await api('/api/game/buy-card', { method:'POST', body: JSON.stringify({ cardId: id }) });
+    await refreshMe();
+    haptic('heavy');
+    showToast('✅ کارت خریداری شد');
+  } catch (e) { showToast('❌ ' + e.message); }
+}
+
+async function renderCgBattle(){
+  const wrap = document.getElementById('cg-content');
+  wrap.innerHTML = `<div class="empty"><p>در حال بارگذاری…</p></div>`;
+  clearInterval(cgQueuePoll);
+  try {
+    const [status, myCards] = await Promise.all([ api('/api/game/status'), api('/api/game/my-cards') ]);
+    cgMyCards = myCards;
+    document.getElementById('cg-status-label').textContent = `رتبه: #${status.rank}`;
+
+    if (status.inQueue) {
+      wrap.innerHTML = `<div class="empty"><div class="e-icon">⏳</div><p>تو صف نبردی… منتظر حریف باش (تا ۵ دقیقه)</p></div>
+        <button class="btn-ghost" onclick="cancelCgQueue()">لغو صف</button>`;
+      cgQueuePoll = setInterval(pollCgQueue, 4000);
+      return;
+    }
+    if (status.justMatched) {
+      wrap.innerHTML = `
+        <div class="hero" style="text-align:center;">
+          <div style="font-size:40px;">${status.won ? '🏆' : '💔'}</div>
+          <h1>${status.won ? 'بردی!' : 'باختی'}</h1>
+          <p>قدرت تو: ${status.myPower} — قدرت حریف: ${status.oppPower}</p>
+        </div>
+        <button class="btn-main" onclick="renderCgBattle()">باشه</button>
+      `;
+      return;
+    }
+
+    const ownedCount = myCards.length;
+    if (ownedCount < status.minDeckSize) {
+      wrap.innerHTML = `<div class="empty"><div class="e-icon">🃏</div><p>حداقل ${status.minDeckSize} کارت لازم داری — اول از فروشگاه بخر</p></div>`;
+      return;
+    }
+    if (status.playsRemaining <= 0) {
+      wrap.innerHTML = `
+        <div class="empty"><div class="e-icon">🔋</div><p>سهمیه بازی امروزت تموم شده</p></div>
+        <button class="btn-main" onclick="buyExtraPlays()">خرید ${status.extraPlayCount} بازی اضافه — ${fmt(status.extraPlayPrice)} ت</button>
+      `;
+      return;
+    }
+
+    cgDeckSelection.clear();
+    wrap.innerHTML = `
+      <div style="font-size:10.5px; color:var(--text-2); margin-bottom:10px;">حداقل ${status.minDeckSize} کارت انتخاب کن — بازی باقی‌مونده امروز: ${status.playsRemaining}</div>
+      <div class="grid" id="cg-deck-grid">
+        ${myCards.map(c => `
+          <div class="pcard" id="deckcard-${c.user_card_id}" onclick="toggleDeckCard(${c.user_card_id})" style="cursor:pointer;">
+            ${c.image_url ? `<img src="${c.image_url}" style="width:100%; height:60px; object-fit:cover; border-radius:10px;">` : `<div class="picon">🃏</div>`}
+            <div class="pname" style="font-size:11.5px;">${c.name}</div>
+            <div class="pdesc">قدرت: ${c.power}</div>
+          </div>
+        `).join('')}
+      </div>
+      <button class="btn-main" style="margin-top:16px;" onclick="startCgQueue(${status.minDeckSize})">شروع نبرد ⚔️</button>
+    `;
+  } catch (e) { showToast('❌ ' + e.message); }
+}
+function toggleDeckCard(userCardId){
+  const el = document.getElementById(`deckcard-${userCardId}`);
+  if (cgDeckSelection.has(userCardId)) {
+    cgDeckSelection.delete(userCardId);
+    el.style.borderColor = 'var(--border)';
+  } else {
+    cgDeckSelection.add(userCardId);
+    el.style.borderColor = 'var(--violet)';
+  }
+}
+async function startCgQueue(minSize){
+  if (cgDeckSelection.size < minSize) { showToast(`❌ حداقل ${minSize} کارت انتخاب کن`); return; }
+  try {
+    const result = await api('/api/game/queue', { method:'POST', body: JSON.stringify({ cardIds: [...cgDeckSelection] }) });
+    haptic('heavy');
+    if (result.matched) {
+      showToast(result.won ? '🎉 بردی!' : '😅 باختی');
+      renderCgBattle();
+    } else {
+      showToast('⏳ تو صف قرار گرفتی، منتظر حریف باش');
+      renderCgBattle();
+    }
+  } catch (e) { showToast('❌ ' + e.message); }
+}
+async function pollCgQueue(){
+  try {
+    const status = await api('/api/game/queue-status');
+    if (!status.inQueue) { clearInterval(cgQueuePoll); renderCgBattle(); }
+  } catch (e) {}
+}
+async function cancelCgQueue(){
+  try { await api('/api/game/queue/cancel', { method:'POST' }); clearInterval(cgQueuePoll); renderCgBattle(); }
+  catch (e) { showToast('❌ ' + e.message); }
+}
+async function buyExtraPlays(){
+  try {
+    await api('/api/game/buy-extra-plays', { method:'POST' });
+    await refreshMe();
+    haptic('heavy');
+    showToast('✅ بازی اضافه خریداری شد');
+    renderCgBattle();
+  } catch (e) { showToast('❌ ' + e.message); }
+}
+
+async function renderCgBoard(){
+  const wrap = document.getElementById('cg-content');
+  wrap.innerHTML = `<div class="empty"><p>در حال بارگذاری…</p></div>`;
+  try {
+    const { rows, prizes } = await api('/api/game/leaderboard');
+    wrap.innerHTML = `
+      ${prizes.length ? `<div class="panel-note" style="font-size:10.5px; color:var(--text-2); margin-bottom:14px; line-height:2;">
+        ${prizes.map(p=>`🏆 رتبه ${p.rank_from} تا ${p.rank_to}: ${p.prize_text}`).join('<br>')}
+      </div>` : ''}
+      ${rows.length ? rows.map((r,i) => `
+        <div class="tx-item">
+          <div class="tx-icon in">#${i+1}</div>
+          <div class="tx-mid"><div class="t1">${r.first_name||'کاربر'}${r.username?' @'+r.username:''}</div><div class="t2">${r.wins} برد / ${r.losses} باخت</div></div>
+          <div class="tx-amt in">${fmt(r.points)} امتیاز</div>
+        </div>
+      `).join('') : `<div class="empty"><div class="e-icon">🏆</div><p>هنوز کسی امتیاز نگرفته</p></div>`}
+    `;
   } catch (e) { showToast('❌ ' + e.message); }
 }
 
