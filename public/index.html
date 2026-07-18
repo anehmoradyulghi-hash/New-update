@@ -416,7 +416,7 @@
         <div class="divider"></div>
         <div class="wallet-actions" style="margin:0;">
           <button class="wbtn primary" onclick="openTopup('rial')"><span>💳</span>شارژ کیف‌پول</button>
-          <button class="wbtn" onclick="openTopup('stars')"><span>⭐️</span>خرید استارز</button>
+          <button class="wbtn" onclick="openRialWithdraw()"><span>📤</span>برداشت ریال</button>
         </div>
       </div>
 
@@ -533,20 +533,33 @@
     <!-- ============ GAMES ============ -->
     <section class="page" id="page-games">
       <div class="sec-title" style="margin-top:4px;"><h2>🎮 بازی‌ها</h2></div>
-      <div class="hero" style="text-align:center; padding:28px 18px;">
-        <div style="font-size:44px; margin-bottom:6px;">🎡</div>
-        <h1 style="margin-bottom:6px;">چرخ شانس روزانه</h1>
-        <p style="margin:0 auto 16px; max-width:100%;">هر ۲۴ ساعت یک‌بار رایگان بچرخون و جایزه‌ی تصادفی (تا ۵۰,۰۰۰ تومان) ببر — بدون شرط‌بندی، بدون ریسک.</p>
-        <button class="hero-cta" id="wheel-btn" onclick="spinWheel()">🎡 چرخوندن</button>
-        <div style="font-size:11px; color:var(--text-2); margin-top:10px;" id="wheel-status"></div>
+
+      <!-- Card Game — featured, primary -->
+      <div class="hero" style="padding:26px 20px; margin-bottom:14px; background:
+          radial-gradient(120% 140% at 100% 0%, rgba(124,108,255,.28), transparent 55%),
+          linear-gradient(135deg,#211c3d,#15132a 70%); border-color:rgba(124,108,255,.35);">
+        <div style="display:flex; align-items:center; gap:10px; margin-bottom:10px;">
+          <div style="font-size:34px;">🃏</div>
+          <div>
+            <div style="font-size:10px; font-weight:800; color:var(--violet); letter-spacing:.5px;">بخش اصلی بازی‌ها</div>
+            <h1 style="margin:0;">نبرد کارتی</h1>
+          </div>
+        </div>
+        <p style="margin-bottom:16px;">کارت جمع کن، ارتقا بده، با بازیکن‌های دیگه ۱به۱ مبارزه کن و تو لیدربورد بالا برو — جایزه‌های واقعی منتظرته.</p>
+        <button class="hero-cta" style="background:linear-gradient(135deg,var(--violet),var(--violet-2)); color:#fff;" onclick="goTo('cardgame')">⚔️ ورود به نبرد کارتی</button>
       </div>
 
-      <div class="list-card" style="margin-top:16px;">
-        <div class="list-row" onclick="goTo('cardgame')">
-          <div class="li-icon">🃏</div>
-          <div class="li-text">نبرد کارتی + لیدربورد</div>
-          <div class="chev">‹</div>
+      <!-- Daily Wheel — compact, secondary -->
+      <div class="panel" style="display:flex; align-items:center; gap:14px; margin-bottom:16px;">
+        <div style="font-size:30px;">🎡</div>
+        <div style="flex:1;">
+          <div style="font-size:12.5px; font-weight:800;">چرخ شانس روزانه</div>
+          <div style="font-size:10.5px; color:var(--text-2); margin-top:2px;" id="wheel-status">رایگان — بدون ریسک</div>
         </div>
+        <button class="wbtn primary" style="width:auto; padding:9px 16px;" id="wheel-btn" onclick="spinWheel()">بچرخون</button>
+      </div>
+
+      <div class="list-card">
         <div class="list-row" onclick="openCommunityLink('channel')">
           <div class="li-icon">📢</div>
           <div class="li-text">عضویت در کانال ما</div>
@@ -573,7 +586,9 @@
       </div>
       <div class="chips" style="margin-bottom:14px;">
         <button class="chip active" id="cg-tab-shop" onclick="switchCardGameTab('shop')">🛍 فروشگاه</button>
+        <button class="chip" id="cg-tab-inventory" onclick="switchCardGameTab('inventory')">🎒 کارت‌های من</button>
         <button class="chip" id="cg-tab-battle" onclick="switchCardGameTab('battle')">⚔️ نبرد</button>
+        <button class="chip" id="cg-tab-freecards" onclick="switchCardGameTab('freecards')">🎁 تسک کارت</button>
         <button class="chip" id="cg-tab-board" onclick="switchCardGameTab('board')">🏆 لیدربورد</button>
       </div>
       <div id="cg-content"></div>
@@ -699,6 +714,18 @@
     <input class="input-box" id="cd-amount" placeholder="مقدار واریزی…" inputmode="decimal">
     <input class="input-box" id="cd-txhash" placeholder="هش تراکنش یا کد رهگیری">
     <button class="btn-main" onclick="confirmCurDeposit()">ثبت درخواست واریز</button>
+  </div>
+</div>
+
+<!-- ===== RIAL WITHDRAW SHEET ===== -->
+<div class="overlay" id="overlay-rial-withdraw" onclick="if(event.target===this) closeSheet('overlay-rial-withdraw')">
+  <div class="sheet">
+    <div class="sheet-handle"></div>
+    <div class="sheet-title">برداشت ریال <span class="x" onclick="closeSheet('overlay-rial-withdraw')">✕</span></div>
+    <div style="font-size:11.5px; color:var(--text-2); margin-bottom:10px; font-weight:600;" id="rw-balance"></div>
+    <input class="input-box" id="rw-amount" placeholder="مبلغ برداشت (تومان)…" inputmode="numeric">
+    <input class="input-box" id="rw-card" placeholder="شماره کارت مقصد">
+    <button class="btn-main" onclick="confirmRialWithdraw()">ثبت درخواست برداشت</button>
   </div>
 </div>
 
@@ -1129,6 +1156,26 @@ async function confirmTopup(){
   }
 }
 
+function openRialWithdraw(){
+  document.getElementById('rw-balance').textContent = `موجودی فعلی: ${fmt(state.balanceRial)} تومان`;
+  document.getElementById('rw-amount').value = '';
+  document.getElementById('rw-card').value = '';
+  openSheet('overlay-rial-withdraw');
+}
+async function confirmRialWithdraw(){
+  const amount = Number(document.getElementById('rw-amount').value.replace(/[^\d]/g,''));
+  const cardNumber = document.getElementById('rw-card').value.trim();
+  if (!amount || amount < 10000) { showToast('❌ حداقل مبلغ برداشت ۱۰,۰۰۰ تومانه'); return; }
+  if (!cardNumber) { showToast('❌ شماره کارت مقصد رو وارد کن'); return; }
+  try {
+    await api('/api/wallet/rial-withdraw', { method:'POST', body: JSON.stringify({ amount, cardNumber }) });
+    closeSheet('overlay-rial-withdraw');
+    await refreshMe();
+    haptic('heavy');
+    showToast('✅ درخواست برداشت ثبت شد، منتظر تایید ادمین باش');
+  } catch (e) { showToast('❌ ' + e.message); }
+}
+
 /* ===================== WALLET PAGE ===================== */
 async function renderWallet(){
   document.getElementById('wallet-rial').textContent = fmt(state.balanceRial);
@@ -1535,11 +1582,74 @@ let cgQueuePoll = null;
 function switchCardGameTab(tab){
   cgTab = tab;
   document.getElementById('cg-tab-shop').classList.toggle('active', tab==='shop');
+  document.getElementById('cg-tab-inventory').classList.toggle('active', tab==='inventory');
   document.getElementById('cg-tab-battle').classList.toggle('active', tab==='battle');
+  document.getElementById('cg-tab-freecards').classList.toggle('active', tab==='freecards');
   document.getElementById('cg-tab-board').classList.toggle('active', tab==='board');
   if (tab==='shop') renderCgShop();
+  if (tab==='inventory') renderCgInventory();
   if (tab==='battle') renderCgBattle();
+  if (tab==='freecards') renderCgFreeCards();
   if (tab==='board') renderCgBoard();
+}
+
+async function renderCgInventory(){
+  const wrap = document.getElementById('cg-content');
+  wrap.innerHTML = `<div class="empty"><p>در حال بارگذاری…</p></div>`;
+  try {
+    const cards = await api('/api/game/my-cards');
+    wrap.innerHTML = cards.length ? `<div class="grid">${cards.map(c => `
+      <div class="pcard">
+        ${c.image_url ? `<img src="${c.image_url}" style="width:100%; height:74px; object-fit:cover; border-radius:10px;">` : `<div class="picon">🃏</div>`}
+        <div class="pname">${c.name} <span style="color:var(--gold-1); font-size:10.5px;">Lv${c.level}</span></div>
+        <div class="pdesc">قدرت: ${c.effective_power}${c.level < c.max_level ? ` → ${c.effective_power + c.power_per_level} بعد ارتقا` : ' (حداکثر)'}</div>
+        ${c.level < c.max_level ? `
+          <button class="addbtn" style="width:100%; margin-top:6px;" onclick="upgradeCard(${c.user_card_id})">
+            ⬆️ ارتقا — ${fmt(c.upgrade_cost * c.level)} ${c.upgrade_currency}
+          </button>` : `<div style="text-align:center; font-size:10px; color:var(--gold-1); margin-top:6px;">⭐ حداکثر سطح</div>`}
+      </div>
+    `).join('')}</div>` : `<div class="empty"><div class="e-icon">🎒</div><p>هنوز کارتی نداری — از فروشگاه بخر یا با تسک بگیر</p></div>`;
+  } catch (e) { showToast('❌ ' + e.message); }
+}
+async function upgradeCard(userCardId){
+  try {
+    const r = await api('/api/game/upgrade-card', { method:'POST', body: JSON.stringify({ userCardId }) });
+    await refreshMe();
+    await renderCgInventory();
+    haptic('heavy');
+    showToast(`✅ کارت به سطح ${r.newLevel} ارتقا پیدا کرد`);
+  } catch (e) { showToast('❌ ' + e.message); }
+}
+
+async function renderCgFreeCards(){
+  const wrap = document.getElementById('cg-content');
+  wrap.innerHTML = `<div class="empty"><p>در حال بارگذاری…</p></div>`;
+  try {
+    const tasks = (await api('/api/tasks')).filter(t => t.reward_card_id);
+    wrap.innerHTML = tasks.length ? tasks.map(t=>`
+      <div class="pcard" style="width:100%; flex-direction:row; align-items:center; gap:12px; margin-bottom:10px;">
+        <div class="picon">${t.type==='join_channel'?'📢':'🔗'}</div>
+        <div style="flex:1;">
+          <div class="pname">${t.title}</div>
+          <div class="pdesc">${t.description||''} — جایزه: 🃏 یک کارت رایگان</div>
+        </div>
+        ${t.done
+          ? `<span style="background:rgba(51,217,152,.13); color:var(--success); padding:6px 12px; border-radius:999px; font-size:11px; font-weight:800;">گرفتی ✓</span>`
+          : `<button class="addbtn" style="width:auto; padding:0 14px; height:32px; border-radius:9px;" onclick="doTaskCard('${t.id}','${t.type}','${t.channel_username||''}','${t.link||''}')">بگیر</button>`}
+      </div>
+    `).join('') : `<div class="empty"><div class="e-icon">🎁</div><p>فعلاً تسک کارت‌داری فعال نیست</p></div>`;
+  } catch (e) { showToast('❌ ' + e.message); }
+}
+async function doTaskCard(id, type, channel, link){
+  if (type === 'join_channel' && channel) window.open('https://t.me/' + channel, '_blank');
+  if (type === 'link' && link) window.open(link, '_blank');
+  try {
+    await api(`/api/tasks/${id}/claim`, { method:'POST' });
+    await refreshMe();
+    await renderCgFreeCards();
+    haptic('heavy');
+    showToast('🎉 کارت رایگان دریافت شد');
+  } catch (e) { showToast('❌ ' + e.message); }
 }
 
 async function renderCgShop(){
