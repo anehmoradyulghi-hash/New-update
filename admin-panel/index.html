@@ -162,6 +162,8 @@
     <div class="nav-item" data-p="giftmarket" onclick="go('giftmarket')"><span class="ic">🎁</span> بازار گیفت</div>
     <div class="nav-item" data-p="giftcats" onclick="go('giftcats')"><span class="ic">🏷</span> دسته‌بندی گیفت</div>
     <div class="nav-item" data-p="currencies" onclick="go('currencies')"><span class="ic">💰</span> ارزها</div>
+    <div class="nav-item" data-p="gamecards" onclick="go('gamecards')"><span class="ic">🃏</span> کارت‌های بازی</div>
+    <div class="nav-item" data-p="leaderboard" onclick="go('leaderboard')"><span class="ic">🏆</span> لیدربورد</div>
     <button class="btn secondary logout-btn" onclick="logout()">خروج از حساب</button>
   </aside>
 
@@ -211,7 +213,7 @@ async function api(path, opts={}){
 function go(page){
   currentPage = page;
   document.querySelectorAll('.nav-item').forEach(n=>n.classList.toggle('active', n.dataset.p===page));
-  const renderers = {dashboard:renderDashboard, users:renderUsers, orders:renderOrders, products:renderProducts, transactions:renderTransactions, referrals:renderReferrals, tasks:renderTasks, giftmarket:renderGiftMarketAdmin, giftcats:renderGiftCategories, currencies:renderCurrencies};
+  const renderers = {dashboard:renderDashboard, users:renderUsers, orders:renderOrders, products:renderProducts, transactions:renderTransactions, referrals:renderReferrals, tasks:renderTasks, giftmarket:renderGiftMarketAdmin, giftcats:renderGiftCategories, currencies:renderCurrencies, gamecards:renderGameCards, leaderboard:renderLeaderboardAdmin};
   renderers[page]();
 }
 
@@ -537,7 +539,8 @@ function onTaskTypeChange(){
   document.getElementById('tf-channel-wrap').style.display = type==='join_channel' ? 'block':'none';
   document.getElementById('tf-link-wrap').style.display = type==='link' ? 'block':'none';
 }
-function openTaskForm(t=null){
+async function openTaskForm(t=null){
+  const cards = await api('/game-cards');
   openModal(`
     <div class="modal-title">${t?'ویرایش تسک':'افزودن تسک'} <span class="x" onclick="closeModal()">✕</span></div>
     <div class="field"><label>شناسه (فقط برای تسک جدید)</label><input id="tf-id" value="${t?.id||''}" ${t?'disabled':''}></div>
@@ -553,6 +556,12 @@ function openTaskForm(t=null){
     <div class="field" id="tf-link-wrap" style="display:none;"><label>لینک</label><input id="tf-link" value="${t?.link||''}"></div>
     <div class="field"><label>جایزه ریالی (تومان)</label><input id="tf-reward-rial" type="number" value="${t?.reward_rial||0}"></div>
     <div class="field"><label>جایزه استارز</label><input id="tf-reward-stars" type="number" value="${t?.reward_stars||0}"></div>
+    <div class="field"><label>جایزه کارت بازی (اختیاری)</label>
+      <select id="tf-reward-card">
+        <option value="">— هیچی —</option>
+        ${cards.map(c=>`<option value="${c.id}" ${t?.reward_card_id===c.id?'selected':''}>${c.name} (قدرت ${c.power})</option>`).join('')}
+      </select>
+    </div>
     ${t ? `<div class="field"><label>وضعیت</label><select id="tf-active"><option value="1" ${t.active?'selected':''}>فعال</option><option value="0" ${!t.active?'selected':''}>غیرفعال</option></select></div>` : ''}
     <button class="btn" onclick="saveTask(${t?`'${t.id}'`:'null'})">ذخیره</button>
   `);
@@ -567,6 +576,7 @@ async function saveTask(existingId){
     link: document.getElementById('tf-link').value || null,
     reward_rial: Number(document.getElementById('tf-reward-rial').value) || 0,
     reward_stars: Number(document.getElementById('tf-reward-stars').value) || 0,
+    reward_card_id: document.getElementById('tf-reward-card').value || null,
   };
   if(!body.title){ toast('❌ عنوان الزامی است'); return; }
   if(existingId){
@@ -746,6 +756,132 @@ async function deleteCurrencyUI(code){
   await api(`/currencies/${code}`, {method:'DELETE'});
   toast('🗑 حذف شد');
   renderCurrencies();
+}
+
+/* ===================== GAME CARDS ===================== */
+async function renderGameCards(){
+  const m = document.getElementById('main');
+  m.innerHTML = `
+    <div class="page-head">
+      <div><h1>کارت‌های بازی</h1><p>کارت‌هایی که تو فروشگاه بازی قابل خریدن و قدرتشون تو نبردها حساب می‌شه</p></div>
+      <button class="btn small" onclick="openGameCardForm()">+ افزودن کارت</button>
+    </div>
+    <div class="panel" style="padding:0;"><table>
+      <thead><tr><th>کارت</th><th>قدرت</th><th>قیمت</th><th>وضعیت</th><th></th></tr></thead>
+      <tbody id="gc2-tbody"><tr class="empty-row"><td colspan="5">در حال بارگذاری…</td></tr></tbody>
+    </table></div>
+  `;
+  const rows = await api('/game-cards');
+  document.getElementById('gc2-tbody').innerHTML = rows.length ? rows.map(c=>`
+    <tr>
+      <td>${c.image_url?`<img src="${c.image_url}" style="width:28px;height:28px;border-radius:6px;object-fit:cover;margin-left:6px;">`:''}${c.name}</td>
+      <td class="mono">${c.power}</td>
+      <td class="mono">${fmt(c.price)} ${c.currency_code}</td>
+      <td><span class="pill ${c.active?'active':'failed'}">${c.active?'فعال':'غیرفعال'}</span></td>
+      <td style="display:flex; gap:6px;">
+        <button class="btn secondary small" onclick='openGameCardForm(${JSON.stringify(c)})'>ویرایش</button>
+        <button class="btn danger small" onclick="deleteGameCardUI('${c.id}')">حذف</button>
+      </td>
+    </tr>
+  `).join('') : `<tr class="empty-row"><td colspan="5">کارتی ثبت نشده</td></tr>`;
+}
+async function openGameCardForm(c=null){
+  const currencies = await api('/currencies');
+  const options = ['RIAL','STARS', ...currencies.map(x=>x.code)];
+  openModal(`
+    <div class="modal-title">${c?'ویرایش کارت':'افزودن کارت'} <span class="x" onclick="closeModal()">✕</span></div>
+    <div class="field"><label>شناسه (فقط برای کارت جدید)</label><input id="gcf-id" value="${c?.id||''}" ${c?'disabled':''}></div>
+    <div class="field"><label>نام کارت</label><input id="gcf-name" value="${c?.name||''}"></div>
+    <div class="field"><label>توضیحات</label><input id="gcf-desc" value="${c?.description||''}"></div>
+    <div class="field"><label>قدرت</label><input id="gcf-power" type="number" value="${c?.power||10}"></div>
+    <div class="field"><label>ارز قیمت‌گذاری</label>
+      <select id="gcf-currency">${options.map(o=>`<option value="${o}" ${c?.currency_code===o?'selected':''}>${o}</option>`).join('')}</select>
+    </div>
+    <div class="field"><label>قیمت</label><input id="gcf-price" type="number" step="any" value="${c?.price||0}"></div>
+    <div class="field"><label>لینک عکس کارت</label><input id="gcf-image" value="${c?.image_url||''}"></div>
+    ${c ? `<div class="field"><label>وضعیت</label><select id="gcf-active"><option value="1" ${c.active?'selected':''}>فعال</option><option value="0" ${!c.active?'selected':''}>غیرفعال</option></select></div>` : ''}
+    <button class="btn" onclick="saveGameCard(${c?`'${c.id}'`:'null'})">ذخیره</button>
+  `);
+}
+async function saveGameCard(existingId){
+  const body = {
+    name: document.getElementById('gcf-name').value,
+    description: document.getElementById('gcf-desc').value,
+    power: Number(document.getElementById('gcf-power').value) || 10,
+    currency_code: document.getElementById('gcf-currency').value,
+    price: Number(document.getElementById('gcf-price').value) || 0,
+    image_url: document.getElementById('gcf-image').value || null,
+  };
+  if(!body.name){ toast('❌ نام کارت الزامی است'); return; }
+  if(existingId){
+    body.active = Number(document.getElementById('gcf-active').value);
+    await api(`/game-cards/${existingId}`, {method:'PATCH', body:JSON.stringify(body)});
+  } else {
+    const id = document.getElementById('gcf-id').value.trim();
+    if(!id){ toast('❌ شناسه کارت را وارد کن'); return; }
+    await api('/game-cards', {method:'POST', body:JSON.stringify({id, ...body})});
+  }
+  toast('✅ کارت ذخیره شد');
+  closeModal();
+  renderGameCards();
+}
+async function deleteGameCardUI(id){
+  if(!confirm('این کارت حذف شود؟')) return;
+  await api(`/game-cards/${id}`, {method:'DELETE'});
+  toast('🗑 حذف شد');
+  renderGameCards();
+}
+
+/* ===================== LEADERBOARD ===================== */
+async function renderLeaderboardAdmin(){
+  const m = document.getElementById('main');
+  m.innerHTML = `
+    <div class="page-head"><div><h1>لیدربورد بازی</h1><p>رتبه‌بندی بازیکنا و جایزه‌هایی که برای هر بازه رتبه تعریف می‌کنی</p></div></div>
+    <div class="panel">
+      <div class="panel-title">افزودن جایزه <span></span></div>
+      <div style="display:flex; gap:8px; margin-bottom:10px;">
+        <input id="lp-from" type="number" placeholder="از رتبه" style="max-width:90px;">
+        <input id="lp-to" type="number" placeholder="تا رتبه" style="max-width:90px;">
+        <input id="lp-text" placeholder="متن جایزه (مثلاً ۵۰۰ هزار تومان)" style="flex:1;">
+        <button class="btn small" onclick="addPrizeUI()">افزودن</button>
+      </div>
+      <table><tbody id="lp-tbody"></tbody></table>
+    </div>
+    <div class="sec-title"><h2>رتبه‌بندی فعلی</h2></div>
+    <div class="panel" style="padding:0;"><table>
+      <thead><tr><th>رتبه</th><th>کاربر</th><th>امتیاز</th><th>برد/باخت</th></tr></thead>
+      <tbody id="lb-tbody"><tr class="empty-row"><td colspan="4">در حال بارگذاری…</td></tr></tbody>
+    </table></div>
+  `;
+  const prizes = await api('/leaderboard-prizes');
+  document.getElementById('lp-tbody').innerHTML = prizes.map(p=>`
+    <tr><td>رتبه ${p.rank_from} تا ${p.rank_to}</td><td>${p.prize_text}</td>
+      <td><button class="btn danger small" onclick="deletePrizeUI(${p.id})">حذف</button></td></tr>
+  `).join('') || '<tr class="empty-row"><td colspan="3">جایزه‌ای ثبت نشده</td></tr>';
+
+  const rows = await api('/game-leaderboard');
+  document.getElementById('lb-tbody').innerHTML = rows.length ? rows.map((r,i)=>`
+    <tr>
+      <td class="mono">#${i+1}</td>
+      <td>${r.first_name||'—'}${r.username?' @'+r.username:''}</td>
+      <td class="mono">${fmt(r.points)}</td>
+      <td>${r.wins}W / ${r.losses}L</td>
+    </tr>
+  `).join('') : `<tr class="empty-row"><td colspan="4">هنوز بازیکنی امتیاز نگرفته</td></tr>`;
+}
+async function addPrizeUI(){
+  const rank_from = Number(document.getElementById('lp-from').value);
+  const rank_to = Number(document.getElementById('lp-to').value);
+  const prize_text = document.getElementById('lp-text').value.trim();
+  if(!rank_from || !rank_to || !prize_text){ toast('❌ همه فیلدها رو پر کن'); return; }
+  await api('/leaderboard-prizes', {method:'POST', body:JSON.stringify({rank_from, rank_to, prize_text})});
+  toast('✅ جایزه اضافه شد');
+  renderLeaderboardAdmin();
+}
+async function deletePrizeUI(id){
+  await api(`/leaderboard-prizes/${id}`, {method:'DELETE'});
+  toast('🗑 حذف شد');
+  renderLeaderboardAdmin();
 }
 
 /* ===================== INIT ===================== */
