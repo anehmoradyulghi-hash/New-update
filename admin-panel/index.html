@@ -787,21 +787,50 @@ async function renderGameCards(){
 }
 async function openGameCardForm(c=null){
   const currencies = await api('/currencies');
-  const options = ['RIAL','STARS', ...currencies.map(x=>x.code)];
+  const options = ['RIAL', ...currencies.map(x=>x.code)];
   openModal(`
     <div class="modal-title">${c?'ویرایش کارت':'افزودن کارت'} <span class="x" onclick="closeModal()">✕</span></div>
     <div class="field"><label>شناسه (فقط برای کارت جدید)</label><input id="gcf-id" value="${c?.id||''}" ${c?'disabled':''}></div>
     <div class="field"><label>نام کارت</label><input id="gcf-name" value="${c?.name||''}"></div>
     <div class="field"><label>توضیحات</label><input id="gcf-desc" value="${c?.description||''}"></div>
-    <div class="field"><label>قدرت</label><input id="gcf-power" type="number" value="${c?.power||10}"></div>
-    <div class="field"><label>ارز قیمت‌گذاری</label>
+    <div class="field"><label>قدرت پایه</label><input id="gcf-power" type="number" value="${c?.power||10}"></div>
+    <div class="field"><label>ارز قیمت‌گذاری خرید</label>
       <select id="gcf-currency">${options.map(o=>`<option value="${o}" ${c?.currency_code===o?'selected':''}>${o}</option>`).join('')}</select>
     </div>
-    <div class="field"><label>قیمت</label><input id="gcf-price" type="number" step="any" value="${c?.price||0}"></div>
-    <div class="field"><label>لینک عکس کارت</label><input id="gcf-image" value="${c?.image_url||''}"></div>
+    <div class="field"><label>قیمت خرید</label><input id="gcf-price" type="number" step="any" value="${c?.price||0}"></div>
+
+    <div style="font-size:12.5px; font-weight:800; margin:16px 0 10px; color:var(--text-1);">تنظیمات ارتقا</div>
+    <div class="field"><label>ارز هزینه ارتقا</label>
+      <select id="gcf-upcur">${options.map(o=>`<option value="${o}" ${c?.upgrade_currency===o?'selected':''}>${o}</option>`).join('')}</select>
+    </div>
+    <div class="field"><label>هزینه ارتقا در هر سطح</label><input id="gcf-upcost" type="number" step="any" value="${c?.upgrade_cost||0}"></div>
+    <div class="field"><label>حداکثر سطح</label><input id="gcf-maxlvl" type="number" value="${c?.max_level||5}"></div>
+    <div class="field"><label>افزایش قدرت به‌ازای هر سطح</label><input id="gcf-pplvl" type="number" value="${c?.power_per_level||5}"></div>
+
+    <div class="field">
+      <label>عکس کارت</label>
+      <input id="gcf-image-file" type="file" accept="image/*" onchange="uploadGameCardImage(this)">
+      <input type="hidden" id="gcf-image" value="${c?.image_url||''}">
+      <div id="gcf-image-preview" style="margin-top:10px;">
+        ${c?.image_url ? `<img src="${c.image_url}" style="width:100%; max-height:140px; object-fit:cover; border-radius:10px;">` : ''}
+      </div>
+    </div>
     ${c ? `<div class="field"><label>وضعیت</label><select id="gcf-active"><option value="1" ${c.active?'selected':''}>فعال</option><option value="0" ${!c.active?'selected':''}>غیرفعال</option></select></div>` : ''}
     <button class="btn" onclick="saveGameCard(${c?`'${c.id}'`:'null'})">ذخیره</button>
   `);
+}
+async function uploadGameCardImage(input){
+  if(!input.files[0]) return;
+  const fd = new FormData();
+  fd.append('image', input.files[0]);
+  try {
+    const res = await fetch(`${API}/upload-image`, { method:'POST', headers:{'Authorization':'Bearer '+token}, body: fd });
+    const data = await res.json();
+    if(!res.ok) throw new Error(data.error || 'خطای آپلود');
+    document.getElementById('gcf-image').value = data.url;
+    document.getElementById('gcf-image-preview').innerHTML = `<img src="${data.url}" style="width:100%; max-height:140px; object-fit:cover; border-radius:10px;">`;
+    toast('✅ عکس آپلود شد');
+  } catch(e){ toast('❌ ' + e.message); }
 }
 async function saveGameCard(existingId){
   const body = {
@@ -810,6 +839,10 @@ async function saveGameCard(existingId){
     power: Number(document.getElementById('gcf-power').value) || 10,
     currency_code: document.getElementById('gcf-currency').value,
     price: Number(document.getElementById('gcf-price').value) || 0,
+    upgrade_currency: document.getElementById('gcf-upcur').value,
+    upgrade_cost: Number(document.getElementById('gcf-upcost').value) || 0,
+    max_level: Number(document.getElementById('gcf-maxlvl').value) || 5,
+    power_per_level: Number(document.getElementById('gcf-pplvl').value) || 5,
     image_url: document.getElementById('gcf-image').value || null,
   };
   if(!body.name){ toast('❌ نام کارت الزامی است'); return; }
