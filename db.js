@@ -206,6 +206,11 @@ tryAddColumn(`ALTER TABLE users ADD COLUMN matches_played_today INTEGER NOT NULL
 tryAddColumn(`ALTER TABLE users ADD COLUMN extra_plays INTEGER NOT NULL DEFAULT 0`);
 tryAddColumn(`ALTER TABLE users ADD COLUMN last_match_date TEXT`);
 tryAddColumn(`ALTER TABLE tasks ADD COLUMN reward_card_id TEXT`);
+tryAddColumn(`ALTER TABLE user_cards ADD COLUMN level INTEGER NOT NULL DEFAULT 1`);
+tryAddColumn(`ALTER TABLE game_cards ADD COLUMN upgrade_cost REAL NOT NULL DEFAULT 0`);
+tryAddColumn(`ALTER TABLE game_cards ADD COLUMN upgrade_currency TEXT NOT NULL DEFAULT 'RIAL'`);
+tryAddColumn(`ALTER TABLE game_cards ADD COLUMN max_level INTEGER NOT NULL DEFAULT 5`);
+tryAddColumn(`ALTER TABLE game_cards ADD COLUMN power_per_level INTEGER NOT NULL DEFAULT 5`);
 tryAddColumn(`ALTER TABLE gift_listings ADD COLUMN category TEXT`);
 
 // دسته‌بندی‌های پیش‌فرض بازار گیفت (فقط یک‌بار)
@@ -368,19 +373,25 @@ export function listGameCards(activeOnly = true) {
 export function getGameCard(id) {
   return db.prepare('SELECT * FROM game_cards WHERE id = ?').get(id);
 }
-export function addGameCard(id, name, imageUrl, power, description, currencyCode, price) {
-  db.prepare(`INSERT INTO game_cards (id, name, image_url, power, description, currency_code, price) VALUES (?,?,?,?,?,?,?)`)
-    .run(id, name, imageUrl || null, power, description || '', currencyCode, price);
+export function addGameCard(id, name, imageUrl, power, description, currencyCode, price, upgradeCost, upgradeCurrency, maxLevel, powerPerLevel) {
+  db.prepare(`INSERT INTO game_cards (id, name, image_url, power, description, currency_code, price, upgrade_cost, upgrade_currency, max_level, power_per_level) VALUES (?,?,?,?,?,?,?,?,?,?,?)`)
+    .run(id, name, imageUrl || null, power, description || '', currencyCode, price, upgradeCost || 0, upgradeCurrency || 'RIAL', maxLevel || 5, powerPerLevel || 5);
 }
 export function updateGameCard(id, fields) {
   const c = getGameCard(id);
   if (!c) throw new Error('کارت پیدا نشد');
-  db.prepare(`UPDATE game_cards SET name=?, image_url=?, power=?, description=?, currency_code=?, price=?, active=? WHERE id=?`)
+  db.prepare(`UPDATE game_cards SET name=?, image_url=?, power=?, description=?, currency_code=?, price=?, upgrade_cost=?, upgrade_currency=?, max_level=?, power_per_level=?, active=? WHERE id=?`)
     .run(fields.name ?? c.name, fields.image_url ?? c.image_url, fields.power ?? c.power, fields.description ?? c.description,
-         fields.currency_code ?? c.currency_code, fields.price ?? c.price, fields.active ?? c.active, id);
+         fields.currency_code ?? c.currency_code, fields.price ?? c.price,
+         fields.upgrade_cost ?? c.upgrade_cost, fields.upgrade_currency ?? c.upgrade_currency,
+         fields.max_level ?? c.max_level, fields.power_per_level ?? c.power_per_level,
+         fields.active ?? c.active, id);
 }
 export function deleteGameCard(id) {
   db.prepare('DELETE FROM game_cards WHERE id = ?').run(id);
+}
+export function effectivePower(card, level) {
+  return card.power + (level - 1) * card.power_per_level;
 }
 
 // ---- inventory ----
@@ -388,11 +399,40 @@ export function grantCard(tgId, cardId) {
   db.prepare('INSERT INTO user_cards (tg_id, card_id) VALUES (?,?)').run(tgId, cardId);
 }
 export function getUserCards(tgId) {
-  return db.prepare(`
-    SELECT uc.id AS user_card_id, uc.acquired_at, c.*
+  const rows = db.prepare(`
+    SELECT uc.id AS user_card_id, uc.acquired_at, uc.level, c.*
     FROM user_cards uc JOIN game_cards c ON c.id = uc.card_id
     WHERE uc.tg_id = ? ORDER BY uc.acquired_at DESC
   `).all(tgId);
+  return rows.map(r => ({ ...r, effective_power: effectivePower(r, r.level) }));
+}
+export function upgradeUserCard(tgId, userCardId) {
+  const row = db.prepare(`
+    SELECT uc.*, c.max_level, c.power_per_level, c.upgrade_cost, c.upgrade_currency, c.name
+    FROM user_cards uc JOIN game_cards c ON c.id = uc.card_id
+    WHERE uc.id = ?
+  `).get(userCardId);
+  if (!row || row.tg_id !== Number(tgId)) throw new Error('این کارت مال تو نیست');
+  if (row.level >= row.max_level) throw new Error('این کارت به حداکثر سطح رسیده');
+
+  const cost = row.upgrade_cost * row.level; // هر سطح گرون‌تر از قبلی
+  if (cost > 0) {
+    if (row.upgrade_currency === 'RIAL') {
+      const user = getUser(tgId);
+      if (user.balance_rial < cost) throw new Error('موجودی ریالی کافی نیست');
+      adjustBalance(tgId, 'rial', -cost, `ارتقای کارت «${row.name}»`);
+    } else if (row.upgrade_currency === 'STARS') {
+      const user = getUser(tgId);
+      if (user.balance_stars < cost) throw new Error('موجودی استارز کافی نیست');
+      adjustBalance(tgId, 'stars', -cost, `ارتقای کارت «${row.name}»`);
+    } else {
+      const bal = getCurrencyBalance(tgId, row.upgrade_currency);
+      if (bal < cost) throw new Error(`موجودی ${row.upgrade_currency} کافی نیست`);
+      adjustCurrencyBalance(tgId, row.upgrade_currency, -cost);
+    }
+  }
+  db.prepare('UPDATE user_cards SET level = level + 1 WHERE id = ?').run(userCardId);
+  return { newLevel: row.level + 1, cost };
 }
 // می‌خرد و مستقیم به کیف‌پول (ریال/استارز/ارز دیگه) وصل می‌شه؛ خرید فوریه چون قیمت‌ها از قبل مشخصن
 export function buyGameCard(tgId, cardId) {
@@ -441,13 +481,13 @@ export function joinQueue(tgId, userCardIds, minDeckSize) {
   if (!Array.isArray(userCardIds) || userCardIds.length < minDeckSize) {
     throw new Error(`حداقل ${minDeckSize} کارت باید انتخاب کنی`);
   }
-  const owned = db.prepare(`SELECT id, card_id FROM user_cards WHERE tg_id = ? AND id IN (${userCardIds.map(() => '?').join(',')})`)
+  const owned = db.prepare(`SELECT id, card_id, level FROM user_cards WHERE tg_id = ? AND id IN (${userCardIds.map(() => '?').join(',')})`)
     .all(tgId, ...userCardIds);
   if (owned.length !== userCardIds.length) throw new Error('یکی از کارت‌ها مال تو نیست');
 
   const power = owned.reduce((sum, uc) => {
     const card = getGameCard(uc.card_id);
-    return sum + (card ? card.power : 0);
+    return sum + (card ? effectivePower(card, uc.level) : 0);
   }, 0);
 
   // پاک کردن صف‌های منقضی‌شده (بیشتر از ۵ دقیقه)
