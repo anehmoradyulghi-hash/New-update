@@ -1,10 +1,27 @@
 import express from 'express';
 import crypto from 'crypto';
-import db, { adjustBalance, getAllListingsForAdmin, adminResolveListing } from './db.js';
+import multer from 'multer';
+import fs from 'fs';
+import path from 'path';
+import db, {
+  adjustBalance, getAllListingsForAdmin, adminResolveListing,
+  listGiftCategories, addGiftCategory, deleteGiftCategory,
+} from './db.js';
 import { sendMessage } from './telegram.js';
 
 const router = express.Router();
 const GIFT_MARKET_FEE = Number(process.env.GIFT_MARKET_FEE_PERCENT || 5);
+
+const UPLOAD_DIR = path.join(process.cwd(), 'uploads');
+if (!fs.existsSync(UPLOAD_DIR)) fs.mkdirSync(UPLOAD_DIR, { recursive: true });
+const upload = multer({
+  storage: multer.diskStorage({
+    destination: (req, file, cb) => cb(null, UPLOAD_DIR),
+    filename: (req, file, cb) => cb(null, Date.now() + '-' + Math.round(Math.random() * 1e9) + path.extname(file.originalname)),
+  }),
+  limits: { fileSize: 5 * 1024 * 1024 },
+  fileFilter: (req, file, cb) => cb(null, /image\/(jpeg|png|webp|gif)/.test(file.mimetype)),
+});
 
 /* =========================================================================
    AUTH — simple password login, in-memory session tokens.
@@ -43,6 +60,29 @@ router.post('/logout', requireAdminAuth, (req, res) => {
 });
 
 router.use(requireAdminAuth); // همه مسیرهای زیر نیاز به لاگین دارن
+
+// آپلود واقعی عکس (نه لینک) — برای تصویر محصولات
+router.post('/upload-image', upload.single('image'), (req, res) => {
+  if (!req.file) return res.status(400).json({ error: 'فایل عکس ارسال نشد' });
+  res.json({ url: `/uploads/${req.file.filename}` });
+});
+
+/* =========================================================================
+   GIFT CATEGORIES — دسته‌بندی‌های بازار گیفت
+   ========================================================================= */
+router.get('/gift-categories', (req, res) => {
+  res.json(listGiftCategories());
+});
+router.post('/gift-categories', (req, res) => {
+  const { name, icon } = req.body;
+  if (!name) return res.status(400).json({ error: 'نام دسته‌بندی الزامی است' });
+  try { addGiftCategory(name, icon); res.json({ ok: true }); }
+  catch (e) { res.status(400).json({ error: 'این دسته‌بندی قبلاً ثبت شده' }); }
+});
+router.delete('/gift-categories/:id', (req, res) => {
+  deleteGiftCategory(req.params.id);
+  res.json({ ok: true });
+});
 
 /* =========================================================================
    DASHBOARD / STATS
