@@ -912,14 +912,24 @@ function haptic(type){ try{ tg && tg.HapticFeedback && tg.HapticFeedback.impactO
 // هر درخواست initData تلگرام رو می‌فرسته تا سرور بفهمه کاربر کیه (بدون این هدر، درخواست رد می‌شه)
 async function api(path, opts = {}) {
   const initData = tg ? tg.initData : '';
-  const res = await fetch(path, {
-    ...opts,
-    headers: {
-      'Content-Type': 'application/json',
-      'X-Init-Data': initData,
-      ...(opts.headers || {}),
-    },
-  });
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 15000); // ۱۵ ثانیه حداکثر انتظار
+  let res;
+  try {
+    res = await fetch(path, {
+      ...opts,
+      signal: controller.signal,
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Init-Data': initData,
+        ...(opts.headers || {}),
+      },
+    });
+  } catch (e) {
+    throw new Error(e.name === 'AbortError' ? 'سرور جواب نداد، دوباره امتحان کن' : 'خطا در اتصال به اینترنت');
+  } finally {
+    clearTimeout(timeoutId);
+  }
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
     const err = new Error(data.error || 'خطای سرور');
@@ -959,7 +969,16 @@ async function boot() {
     return;
   }
   try {
-    const [me, products, config] = await Promise.all([ api('/api/me'), api('/api/products'), fetch('/api/config').then(r=>r.json()).catch(()=>({})) ]);
+    const configPromise = (async () => {
+      try {
+        const ctrl = new AbortController();
+        const t = setTimeout(() => ctrl.abort(), 8000);
+        const r = await fetch('/api/config', { signal: ctrl.signal });
+        clearTimeout(t);
+        return await r.json();
+      } catch (e) { return {}; }
+    })();
+    const [me, products, config] = await Promise.all([ api('/api/me'), api('/api/products'), configPromise ]);
     state.user = { name: `${me.first_name||''}`.trim() || 'کاربر تلگرام', username: me.username ? '@'+me.username : '', id: me.tg_id };
     state.balanceRial = me.balance_rial;
     state.balanceStars = me.balance_stars;
@@ -1953,18 +1972,4 @@ async function renderCgShop(){
         <div class="gc-power">⚡ ${c.power}</div>
         <div class="gc-body">
           <div class="gc-name">${c.name}</div>
-          <div class="gc-sub" style="color:${r.color};">${r.label}</div>
-          <div class="gc-actions">
-            <button class="gc-btn" style="background:linear-gradient(135deg,var(--violet),var(--violet-2));" onclick="buyGameCard('${c.id}')">${fmt(c.price)} ${c.currency_code}</button>
-          </div>
-        </div>
-      </div>
-    `;}).join('')}</div>` : `<div class="empty"><div class="e-icon">🃏</div><p>فعلاً کارتی تو فروشگاه نیست</p></div>`;
-  } catch (e) { showToast('❌ ' + e.message); }
-}
-async function buyGameCard(id){
-  try {
-    await api('/api/game/buy-card', { method:'POST', body: JSON.stringify({ cardId: id }) });
-    await refreshMe();
-    haptic('heavy');
-    showToast('✅ کا
+          <div class="gc-sub" style="color:${r.colo
