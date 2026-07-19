@@ -24,6 +24,7 @@ import db, {
   getLeaderboardResetInfo, checkAndAutoResetLeaderboard,
   listActiveCardTasks, isCardTaskDone, completeCardTask,
 } from './db.js';
+import { getLivePrices } from './prices.js';
 import adminRouter from './admin.js';
 
 const app = express();
@@ -385,14 +386,49 @@ app.post('/api/wallet/card-topup', requireTelegramAuth, async (req, res) => {
 });
 
 /* =========================================================================
-   MULTI-CURRENCY WALLET — TON, USDT و هر ارز دیگه که از پنل تعریف بشه
-   واریز/برداشت با تایید دستی ادمین (بدون هات‌والت خودکار، امن‌تر)
+   MULTI-CURRENCY WALLET — تتر و تون (گرام) — قیمت لحظه‌ای از نوبیتکس
+   واریز/برداشت با تایید دستی ادمین، تبدیل آنی بین ریال/تتر/تون خودکاره
    ========================================================================= */
 app.get('/api/currencies', (req, res) => {
   res.json(listCurrencies());
 });
+app.get('/api/prices', async (req, res) => {
+  res.json(await getLivePrices());
+});
 app.get('/api/wallet/balances', requireTelegramAuth, (req, res) => {
   res.json(getUserBalances(req.dbUser.tg_id));
+});
+
+const SWAP_FEE_PERCENT = Number(process.env.SWAP_FEE_PERCENT || 1);
+app.post('/api/wallet/swap', requireTelegramAuth, async (req, res) => {
+  const { from, to, amount } = req.body; // from/to: 'RIAL' | 'USDT' | 'TON'
+  const amt = Number(amount);
+  if (!amt || amt <= 0) return res.status(400).json({ error: 'مقدار نامعتبر است' });
+  if (from === to) return res.status(400).json({ error: 'مبدا و مقصد نمی‌تونن یکی باشن' });
+  if (![from, to].includes('RIAL')) return res.status(400).json({ error: 'تبدیل فقط بین ریال و ارز دیگه‌س' });
+
+  const prices = await getLivePrices(); // تومان به‌ازای هر واحد
+  const crypto = from === 'RIAL' ? to : from;
+  const unitPrice = crypto === 'USDT' ? prices.usdt : prices.ton;
+  if (!unitPrice) return res.status(503).json({ error: 'قیمت لحظه‌ای در دسترس نیست، چند لحظه دیگه امتحان کن' });
+
+  const user = getUser(req.dbUser.tg_id);
+  let outputAmount;
+  if (from === 'RIAL') {
+    if (user.balance_rial < amt) return res.status(400).json({ error: 'موجودی ریالی کافی نیست' });
+    const gross = amt / unitPrice;
+    outputAmount = gross * (1 - SWAP_FEE_PERCENT / 100);
+    adjustBalance(req.dbUser.tg_id, 'rial', -amt, `تبدیل ریال به ${to}`);
+    adjustCurrencyBalance(req.dbUser.tg_id, to, outputAmount);
+  } else {
+    const bal = getCurrencyBalance(req.dbUser.tg_id, from);
+    if (bal < amt) return res.status(400).json({ error: `موجودی ${from} کافی نیست` });
+    const gross = amt * unitPrice;
+    outputAmount = Math.floor(gross * (1 - SWAP_FEE_PERCENT / 100));
+    adjustCurrencyBalance(req.dbUser.tg_id, from, -amt);
+    adjustBalance(req.dbUser.tg_id, 'rial', outputAmount, `تبدیل ${from} به ریال`);
+  }
+  res.json({ ok: true, outputAmount, rate: unitPrice });
 });
 
 app.post('/api/wallet/currency-deposit', requireTelegramAuth, (req, res) => {
@@ -501,9 +537,11 @@ app.get('/api/game/history', requireTelegramAuth, (req, res) => {
 app.get('/api/game/status', requireTelegramAuth, (req, res) => {
   const remaining = getPlaysRemaining(req.dbUser.tg_id, GAME_DAILY_LIMIT);
   const q = getQueueStatus(req.dbUser.tg_id);
+  const user = getUser(req.dbUser.tg_id);
   res.json({
     dailyLimit: GAME_DAILY_LIMIT, playsRemaining: remaining, minDeckSize: GAME_MIN_DECK_SIZE,
     extraPlayPrice: GAME_EXTRA_PLAY_PRICE, extraPlayCount: GAME_EXTRA_PLAY_COUNT,
+    extraPlays: user.extra_plays || 0,
     rank: getMyRank(req.dbUser.tg_id), ...q,
   });
 });
