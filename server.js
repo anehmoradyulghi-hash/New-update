@@ -18,9 +18,11 @@ import db, {
   createManualPayment, getManualPayment, setManualPaymentStatus,
   listCurrencies, getUserBalances, adjustCurrencyBalance, getCurrencyBalance,
   createCurrencyRequest, getCurrencyRequest, setCurrencyRequestStatus,
-  listGameCards, getGameCard, buyGameCard, getUserCards, upgradeUserCard,
+  listGameCards, getGameCard, buyGameCard, getUserCards, upgradeUserCard, sacrificeUpgradeCard,
   getPlaysRemaining, addExtraPlays, joinQueue, getQueueStatus, cancelQueue,
-  getLeaderboard, getMyRank, listLeaderboardPrizes,
+  getLeaderboard, getMyRank, listLeaderboardPrizes, getMatchHistory,
+  getLeaderboardResetInfo, checkAndAutoResetLeaderboard,
+  listActiveCardTasks, isCardTaskDone, completeCardTask,
 } from './db.js';
 import adminRouter from './admin.js';
 
@@ -486,6 +488,15 @@ app.post('/api/game/upgrade-card', requireTelegramAuth, (req, res) => {
   try { const result = upgradeUserCard(req.dbUser.tg_id, req.body.userCardId); res.json({ ok: true, ...result }); }
   catch (e) { res.status(400).json({ error: e.message }); }
 });
+app.post('/api/game/sacrifice-upgrade', requireTelegramAuth, (req, res) => {
+  try {
+    const result = sacrificeUpgradeCard(req.dbUser.tg_id, req.body.targetUserCardId, req.body.sacrificeUserCardId);
+    res.json({ ok: true, ...result });
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
+app.get('/api/game/history', requireTelegramAuth, (req, res) => {
+  res.json(getMatchHistory(req.dbUser.tg_id));
+});
 
 app.get('/api/game/status', requireTelegramAuth, (req, res) => {
   const remaining = getPlaysRemaining(req.dbUser.tg_id, GAME_DAILY_LIMIT);
@@ -526,7 +537,27 @@ app.post('/api/game/queue/cancel', requireTelegramAuth, (req, res) => {
   res.json({ ok: true });
 });
 app.get('/api/game/leaderboard', (req, res) => {
-  res.json({ rows: getLeaderboard(50), prizes: listLeaderboardPrizes() });
+  checkAndAutoResetLeaderboard();
+  res.json({ rows: getLeaderboard(50), prizes: listLeaderboardPrizes(), reset: getLeaderboardResetInfo() });
+});
+
+/* =========================================================================
+   CARD TASKS — تسک‌های اختصاصی گرفتن کارت رایگان (مجزا از تسک‌های عمومی ربات)
+   ========================================================================= */
+app.get('/api/card-tasks', requireTelegramAuth, (req, res) => {
+  const tasks = listActiveCardTasks().map(t => ({ ...t, done: isCardTaskDone(req.dbUser.tg_id, t.id) }));
+  res.json(tasks);
+});
+app.post('/api/card-tasks/:id/claim', requireTelegramAuth, async (req, res) => {
+  const task = db.prepare('SELECT * FROM card_tasks WHERE id = ? AND active = 1').get(req.params.id);
+  if (!task) return res.status(404).json({ error: 'تسک پیدا نشد' });
+  if (isCardTaskDone(req.dbUser.tg_id, task.id)) return res.status(400).json({ error: 'قبلاً این تسک رو انجام دادی' });
+  if (task.type === 'join_channel') {
+    const joined = await isChannelMember(task.channel_username, req.dbUser.tg_id);
+    if (!joined) return res.status(400).json({ error: 'هنوز عضو کانال نشدی' });
+  }
+  completeCardTask(req.dbUser.tg_id, task);
+  res.json({ ok: true });
 });
 
 // gateway calls this URL back after the user finishes paying (set as ZARINPAL_CALLBACK_URL)
