@@ -4,14 +4,19 @@ const BOT_TOKEN = process.env.BOT_TOKEN;
 const API = `https://api.telegram.org/bot${BOT_TOKEN}`;
 
 async function call(method, payload) {
-  const res = await fetch(`${API}/${method}`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload),
-  });
-  const data = await res.json();
-  if (!data.ok) console.error(`[telegram:${method}]`, data);
-  return data;
+  try {
+    const res = await fetch(`${API}/${method}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    const data = await res.json();
+    if (!data.ok) console.error(`[telegram:${method}]`, data);
+    return data;
+  } catch (e) {
+    console.error(`[telegram:${method}] network/parse error`, e.message);
+    return { ok: false, error: e.message };
+  }
 }
 
 export const sendMessage = (chatId, text, extra = {}) =>
@@ -44,7 +49,11 @@ export const setWebhook = (url, secretToken) =>
 export async function isChannelMember(channelUsername, userId) {
   if (!channelUsername) return true; // اگه کانالی تنظیم نشده، محدودیتی نیست
   const data = await call('getChatMember', { chat_id: '@' + channelUsername.replace('@', ''), user_id: userId });
-  if (!data.ok) return false;
+  if (!data.ok) {
+    // اگه نتونستیم وضعیت عضویت رو چک کنیم (قطعی شبکه، محدودیت API و...)، کاربر رو مسدود نمی‌کنیم
+    if (data.error) return true;
+    return false;
+  }
   return !['left', 'kicked'].includes(data.result.status);
 }
 
