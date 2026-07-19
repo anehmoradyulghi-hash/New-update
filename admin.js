@@ -10,6 +10,8 @@ import db, {
   adjustCurrencyBalance, getAllCurrencyRequestsForAdmin,
   listGameCards, addGameCard, updateGameCard, deleteGameCard,
   getLeaderboard, listLeaderboardPrizes, addLeaderboardPrize, deleteLeaderboardPrize,
+  getLeaderboardResetInfo, resetLeaderboard, setLeaderboardResetInterval,
+  listAllCardTasksForAdmin, addCardTask, updateCardTask, deleteCardTask,
 } from './db.js';
 import { sendMessage } from './telegram.js';
 
@@ -340,6 +342,41 @@ router.post('/leaderboard-prizes', (req, res) => {
 });
 router.delete('/leaderboard-prizes/:id', (req, res) => {
   deleteLeaderboardPrize(req.params.id);
+  res.json({ ok: true });
+});
+
+router.get('/leaderboard-reset-info', (req, res) => {
+  res.json(getLeaderboardResetInfo());
+});
+router.post('/leaderboard-reset-info', (req, res) => {
+  const days = Number(req.body.intervalDays);
+  if (!days || days < 1) return res.status(400).json({ error: 'عدد نامعتبر' });
+  setLeaderboardResetInterval(days);
+  res.json({ ok: true });
+});
+router.post('/leaderboard-reset-now', (req, res) => {
+  resetLeaderboard();
+  res.json({ ok: true });
+});
+
+/* =========================================================================
+   CARD TASKS — تسک‌های مجزای گرفتن کارت رایگان
+   ========================================================================= */
+router.get('/card-tasks', (req, res) => {
+  res.json(listAllCardTasksForAdmin());
+});
+router.post('/card-tasks', (req, res) => {
+  const { id, title, description, type, channel_username, link, reward_card_id } = req.body;
+  if (!id || !title || !type || !reward_card_id) return res.status(400).json({ error: 'فیلدهای ضروری خالی است' });
+  try { addCardTask(id, title, description, type, channel_username, link, reward_card_id); res.json({ ok: true }); }
+  catch (e) { res.status(400).json({ error: 'این شناسه قبلاً استفاده شده' }); }
+});
+router.patch('/card-tasks/:id', (req, res) => {
+  try { updateCardTask(req.params.id, req.body); res.json({ ok: true }); }
+  catch (e) { res.status(400).json({ error: e.message }); }
+});
+router.delete('/card-tasks/:id', (req, res) => {
+  deleteCardTask(req.params.id);
   res.json({ ok: true });
 });
 
