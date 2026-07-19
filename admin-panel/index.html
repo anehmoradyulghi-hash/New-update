@@ -676,9 +676,10 @@ async function deleteGiftCategoryUI(id){
 async function renderCurrencies(){
   const m = document.getElementById('main');
   m.innerHTML = `
-    <div class="page-head">
-      <div><h1>ارزهای قابل واریز/برداشت</h1><p>هر ارزی که اینجا اضافه کنی، تو کیف‌پول مینی‌اپ برای کاربرا قابل واریز/برداشته</p></div>
-      <button class="btn small" onclick="openCurrencyForm()">+ افزودن ارز</button>
+    <div class="page-head"><div><h1>تتر و تون (گرام)</h1><p>قیمت لحظه‌ای از نوبیتکس — کاربرا می‌تونن خودشون تو مینی‌اپ تبدیل کنن، واریز/برداشت واقعی هم نیاز به تایید تو داره</p></div></div>
+    <div class="stat-grid" style="grid-template-columns:repeat(2,1fr);">
+      <div class="stat-card"><div class="l">قیمت لحظه‌ای تتر</div><div class="v gold" id="price-usdt">…</div></div>
+      <div class="stat-card"><div class="l">قیمت لحظه‌ای تون</div><div class="v gold" id="price-ton">…</div></div>
     </div>
     <div class="panel" style="padding:0;"><table>
       <thead><tr><th>ارز</th><th>آدرس واریز</th><th>حداقل</th><th>وضعیت</th><th></th></tr></thead>
@@ -690,19 +691,23 @@ async function renderCurrencies(){
       <tbody id="cur-req-tbody"><tr class="empty-row"><td colspan="6">در حال بارگذاری…</td></tr></tbody>
     </table></div>
   `;
+  api('/prices').then(p => {
+    document.getElementById('price-usdt').textContent = p.usdt ? fmt(p.usdt) + ' ت' : 'نامشخص';
+    document.getElementById('price-ton').textContent = p.ton ? fmt(p.ton) + ' ت' : 'نامشخص';
+  });
+
   const rows = await api('/currencies');
   document.getElementById('cur-tbody').innerHTML = rows.length ? rows.map(c=>`
     <tr>
       <td>${c.icon} ${c.name} (${c.code})</td>
-      <td class="mono" style="font-size:10.5px;">${c.deposit_address || '—'}</td>
+      <td class="mono" style="font-size:10.5px;">${c.deposit_address || '— هنوز تنظیم نشده'}</td>
       <td class="mono">${c.min_amount}</td>
       <td><span class="pill ${c.active?'active':'failed'}">${c.active?'فعال':'غیرفعال'}</span></td>
-      <td style="display:flex; gap:6px;">
+      <td>
         <button class="btn secondary small" onclick='openCurrencyForm(${JSON.stringify(c)})'>ویرایش</button>
-        <button class="btn danger small" onclick="deleteCurrencyUI('${c.code}')">حذف</button>
       </td>
     </tr>
-  `).join('') : `<tr class="empty-row"><td colspan="5">ارزی ثبت نشده</td></tr>`;
+  `).join('') : `<tr class="empty-row"><td colspan="5">خطا در بارگذاری</td></tr>`;
 
   const reqs = await api('/currency-requests');
   const statusLabel = {pending:'در انتظار', approved:'تاییدشده', rejected:'ردشده'};
@@ -718,44 +723,26 @@ async function renderCurrencies(){
     </tr>
   `).join('') : `<tr class="empty-row"><td colspan="6">درخواستی ثبت نشده</td></tr>`;
 }
-function openCurrencyForm(c=null){
+function openCurrencyForm(c){
   openModal(`
-    <div class="modal-title">${c?'ویرایش ارز':'افزودن ارز'} <span class="x" onclick="closeModal()">✕</span></div>
-    <div class="field"><label>کد ارز (فقط برای ارز جدید، مثلاً TON)</label><input id="cf-code" value="${c?.code||''}" ${c?'disabled':''}></div>
-    <div class="field"><label>نام</label><input id="cf-name" value="${c?.name||''}"></div>
-    <div class="field"><label>ایموجی</label><input id="cf-icon" value="${c?.icon||'💰'}"></div>
-    <div class="field"><label>آدرس والت برای واریز کاربرا</label><input id="cf-address" value="${c?.deposit_address||''}"></div>
-    <div class="field"><label>توضیح اضافه (شبکه، مموی و...)</label><input id="cf-note" value="${c?.deposit_note||''}"></div>
-    <div class="field"><label>حداقل مقدار واریز</label><input id="cf-min" type="number" step="any" value="${c?.min_amount||0}"></div>
-    ${c ? `<div class="field"><label>وضعیت</label><select id="cf-active"><option value="1" ${c.active?'selected':''}>فعال</option><option value="0" ${!c.active?'selected':''}>غیرفعال</option></select></div>` : ''}
-    <button class="btn" onclick="saveCurrency(${c?`'${c.code}'`:'null'})">ذخیره</button>
+    <div class="modal-title">ویرایش ${c.name} <span class="x" onclick="closeModal()">✕</span></div>
+    <div class="field"><label>آدرس والت برای واریز کاربرا</label><input id="cf-address" value="${c.deposit_address||''}"></div>
+    <div class="field"><label>توضیح اضافه (شبکه، مموی و...)</label><input id="cf-note" value="${c.deposit_note||''}"></div>
+    <div class="field"><label>حداقل مقدار واریز</label><input id="cf-min" type="number" step="any" value="${c.min_amount||0}"></div>
+    <div class="field"><label>وضعیت</label><select id="cf-active"><option value="1" ${c.active?'selected':''}>فعال</option><option value="0" ${!c.active?'selected':''}>غیرفعال</option></select></div>
+    <button class="btn" onclick="saveCurrency('${c.code}')">ذخیره</button>
   `);
 }
-async function saveCurrency(existingCode){
+async function saveCurrency(code){
   const body = {
-    name: document.getElementById('cf-name').value,
-    icon: document.getElementById('cf-icon').value,
     deposit_address: document.getElementById('cf-address').value,
     deposit_note: document.getElementById('cf-note').value,
     min_amount: Number(document.getElementById('cf-min').value) || 0,
+    active: Number(document.getElementById('cf-active').value),
   };
-  if(!body.name){ toast('❌ نام ارز الزامی است'); return; }
-  if(existingCode){
-    body.active = Number(document.getElementById('cf-active').value);
-    await api(`/currencies/${existingCode}`, {method:'PATCH', body:JSON.stringify(body)});
-  } else {
-    const code = document.getElementById('cf-code').value.trim();
-    if(!code){ toast('❌ کد ارز را وارد کن'); return; }
-    await api('/currencies', {method:'POST', body:JSON.stringify({code, ...body})});
-  }
-  toast('✅ ارز ذخیره شد');
+  await api(`/currencies/${code}`, {method:'PATCH', body:JSON.stringify(body)});
+  toast('✅ ذخیره شد');
   closeModal();
-  renderCurrencies();
-}
-async function deleteCurrencyUI(code){
-  if(!confirm('این ارز حذف شود؟')) return;
-  await api(`/currencies/${code}`, {method:'DELETE'});
-  toast('🗑 حذف شد');
   renderCurrencies();
 }
 
