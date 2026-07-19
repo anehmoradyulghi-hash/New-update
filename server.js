@@ -74,23 +74,28 @@ const isAdmin = (id) => ADMIN_IDS.includes(Number(id));
    know WHO is calling us without any separate login system.
    ========================================================================= */
 async function requireTelegramAuth(req, res, next) {
-  const initData = req.headers['x-init-data'];
-  if (!initData) return res.status(401).json({ error: 'no init data' });
-  const tgUser = validateInitData(initData, process.env.BOT_TOKEN);
-  if (!tgUser) return res.status(401).json({ error: 'invalid init data' });
+  try {
+    const initData = req.headers['x-init-data'];
+    if (!initData) return res.status(401).json({ error: 'no init data' });
+    const tgUser = validateInitData(initData, process.env.BOT_TOKEN);
+    if (!tgUser) return res.status(401).json({ error: 'invalid init data' });
 
-  const params = new URLSearchParams(initData);
-  const startParam = params.get('start_param'); // carries ref_XXXXX if opened via referral link
-  req.dbUser = getOrCreateUser(tgUser, startParam);
+    const params = new URLSearchParams(initData);
+    const startParam = params.get('start_param'); // carries ref_XXXXX if opened via referral link
+    req.dbUser = getOrCreateUser(tgUser, startParam);
 
-  // جوین اجباری کانال (اگه تو Variables تنظیم شده باشه)
-  if (process.env.REQUIRED_CHANNEL) {
-    const joined = await isChannelMember(process.env.REQUIRED_CHANNEL, tgUser.id);
-    if (!joined) {
-      return res.status(403).json({ error: 'join_required', channel: process.env.REQUIRED_CHANNEL });
+    // جوین اجباری کانال (اگه تو Variables تنظیم شده باشه)
+    if (process.env.REQUIRED_CHANNEL) {
+      const joined = await isChannelMember(process.env.REQUIRED_CHANNEL, tgUser.id);
+      if (!joined) {
+        return res.status(403).json({ error: 'join_required', channel: process.env.REQUIRED_CHANNEL });
+      }
     }
+    next();
+  } catch (e) {
+    console.error('[requireTelegramAuth]', e);
+    res.status(500).json({ error: 'خطای داخلی سرور، دوباره امتحان کن' });
   }
-  next();
 }
 
 /* =========================================================================
@@ -822,6 +827,21 @@ app.post('/telegram-webhook', async (req, res) => {
 app.use('/miniapp', express.static('public')); // put starkadeh-miniapp.html as public/index.html
 app.use('/admin/api', adminRouter);            // admin panel API (password protected, see admin.js)
 app.use('/admin', express.static('admin-panel')); // admin panel frontend (admin-panel/index.html)
+
+// اگه هر مسیری خطای پیش‌بینی‌نشده بده، به‌جای هنگ‌کردن، جواب واضح برمی‌گردونه
+app.use((err, req, res, next) => {
+  console.error('[unhandled route error]', err);
+  if (res.headersSent) return next(err);
+  res.status(500).json({ error: 'خطای داخلی سرور' });
+});
+
+// اگه یه Promise ناخواسته reject بشه (مثلاً یه await بدون try/catch)، کل سرور کرش نکنه
+process.on('unhandledRejection', (reason) => {
+  console.error('[unhandledRejection]', reason);
+});
+process.on('uncaughtException', (err) => {
+  console.error('[uncaughtException]', err);
+});
 
 app.listen(process.env.PORT || 3000, async () => {
   console.log(`🚀 server running on port ${process.env.PORT || 3000}`);
