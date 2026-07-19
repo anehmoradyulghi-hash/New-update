@@ -6,13 +6,14 @@ import path from 'path';
 import db, {
   adjustBalance, getAllListingsForAdmin, adminResolveListing,
   listGiftCategories, addGiftCategory, deleteGiftCategory,
-  listCurrencies, addCurrency, updateCurrency, deleteCurrency,
+  listCurrencies, updateCurrency,
   adjustCurrencyBalance, getAllCurrencyRequestsForAdmin,
   listGameCards, addGameCard, updateGameCard, deleteGameCard,
   getLeaderboard, listLeaderboardPrizes, addLeaderboardPrize, deleteLeaderboardPrize,
   getLeaderboardResetInfo, resetLeaderboard, setLeaderboardResetInterval,
   listAllCardTasksForAdmin, addCardTask, updateCardTask, deleteCardTask,
 } from './db.js';
+import { getLivePrices } from './prices.js';
 import { sendMessage } from './telegram.js';
 
 const router = express.Router();
@@ -278,24 +279,17 @@ router.post('/gift-listings/:id/resolve', (req, res) => {
 });
 
 /* =========================================================================
-   CURRENCIES — مدیریت ارزهای قابل واریز/برداشت (TON, USDT, ...)
+   CURRENCIES — فقط تتر و تون (ثابت، دیگه نمی‌شه ارز جدید اضافه/حذف کرد)
    ========================================================================= */
 router.get('/currencies', (req, res) => {
   res.json(listCurrencies(false));
-});
-router.post('/currencies', (req, res) => {
-  const { code, name, icon, deposit_address, deposit_note, min_amount } = req.body;
-  if (!code || !name) return res.status(400).json({ error: 'کد و نام ارز الزامی است' });
-  try { addCurrency(code, name, icon, deposit_address, deposit_note, min_amount); res.json({ ok: true }); }
-  catch (e) { res.status(400).json({ error: 'این کد ارز قبلاً ثبت شده' }); }
 });
 router.patch('/currencies/:code', (req, res) => {
   try { updateCurrency(req.params.code, req.body); res.json({ ok: true }); }
   catch (e) { res.status(400).json({ error: e.message }); }
 });
-router.delete('/currencies/:code', (req, res) => {
-  deleteCurrency(req.params.code);
-  res.json({ ok: true });
+router.get('/prices', async (req, res) => {
+  res.json(await getLivePrices());
 });
 
 // تاریخچه‌ی همه‌ی درخواست‌های واریز/برداشت ارزی (برای نظارت — تایید اصلی از داخل ربات انجام می‌شه)
