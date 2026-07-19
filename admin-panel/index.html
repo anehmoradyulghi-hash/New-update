@@ -164,6 +164,7 @@
     <div class="nav-item" data-p="currencies" onclick="go('currencies')"><span class="ic">💰</span> ارزها</div>
     <div class="nav-item" data-p="gamecards" onclick="go('gamecards')"><span class="ic">🃏</span> کارت‌های بازی</div>
     <div class="nav-item" data-p="leaderboard" onclick="go('leaderboard')"><span class="ic">🏆</span> لیدربورد</div>
+    <div class="nav-item" data-p="cardtasks" onclick="go('cardtasks')"><span class="ic">🎁</span> تسک کارت</div>
     <button class="btn secondary logout-btn" onclick="logout()">خروج از حساب</button>
   </aside>
 
@@ -213,7 +214,7 @@ async function api(path, opts={}){
 function go(page){
   currentPage = page;
   document.querySelectorAll('.nav-item').forEach(n=>n.classList.toggle('active', n.dataset.p===page));
-  const renderers = {dashboard:renderDashboard, users:renderUsers, orders:renderOrders, products:renderProducts, transactions:renderTransactions, referrals:renderReferrals, tasks:renderTasks, giftmarket:renderGiftMarketAdmin, giftcats:renderGiftCategories, currencies:renderCurrencies, gamecards:renderGameCards, leaderboard:renderLeaderboardAdmin};
+  const renderers = {dashboard:renderDashboard, users:renderUsers, orders:renderOrders, products:renderProducts, transactions:renderTransactions, referrals:renderReferrals, tasks:renderTasks, giftmarket:renderGiftMarketAdmin, giftcats:renderGiftCategories, currencies:renderCurrencies, gamecards:renderGameCards, leaderboard:renderLeaderboardAdmin, cardtasks:renderCardTasksAdmin};
   renderers[page]();
 }
 
@@ -871,6 +872,15 @@ async function renderLeaderboardAdmin(){
   m.innerHTML = `
     <div class="page-head"><div><h1>لیدربورد بازی</h1><p>رتبه‌بندی بازیکنا و جایزه‌هایی که برای هر بازه رتبه تعریف می‌کنی</p></div></div>
     <div class="panel">
+      <div class="panel-title">تنظیمات ریست خودکار</div>
+      <div id="lb-reset-info" style="font-size:11.5px; color:var(--text-2); margin-bottom:12px;">در حال بارگذاری…</div>
+      <div style="display:flex; gap:8px; align-items:center;">
+        <input id="lb-interval" type="number" placeholder="فاصله (روز)" style="max-width:110px;">
+        <button class="btn secondary small" onclick="saveResetInterval()">ذخیره فاصله</button>
+        <button class="btn danger small" onclick="resetLeaderboardNow()">ریست همین الان</button>
+      </div>
+    </div>
+    <div class="panel">
       <div class="panel-title">افزودن جایزه <span></span></div>
       <div style="display:flex; gap:8px; margin-bottom:10px;">
         <input id="lp-from" type="number" placeholder="از رتبه" style="max-width:90px;">
@@ -886,6 +896,10 @@ async function renderLeaderboardAdmin(){
       <tbody id="lb-tbody"><tr class="empty-row"><td colspan="4">در حال بارگذاری…</td></tr></tbody>
     </table></div>
   `;
+  const resetInfo = await api('/leaderboard-reset-info');
+  document.getElementById('lb-interval').value = resetInfo.intervalDays;
+  document.getElementById('lb-reset-info').innerHTML = `آخرین ریست: ${new Date(resetInfo.lastReset).toLocaleString('fa-IR')}<br>ریست بعدی: ${new Date(resetInfo.nextReset).toLocaleString('fa-IR')}`;
+
   const prizes = await api('/leaderboard-prizes');
   document.getElementById('lp-tbody').innerHTML = prizes.map(p=>`
     <tr><td>رتبه ${p.rank_from} تا ${p.rank_to}</td><td>${p.prize_text}</td>
@@ -915,6 +929,105 @@ async function deletePrizeUI(id){
   await api(`/leaderboard-prizes/${id}`, {method:'DELETE'});
   toast('🗑 حذف شد');
   renderLeaderboardAdmin();
+}
+async function saveResetInterval(){
+  const days = Number(document.getElementById('lb-interval').value);
+  if(!days || days<1){ toast('❌ عدد معتبر وارد کن'); return; }
+  await api('/leaderboard-reset-info', {method:'POST', body:JSON.stringify({intervalDays: days})});
+  toast('✅ فاصله ریست ذخیره شد');
+  renderLeaderboardAdmin();
+}
+async function resetLeaderboardNow(){
+  if(!confirm('لیدربورد الان ریست بشه؟ همه امتیازها صفر می‌شن.')) return;
+  await api('/leaderboard-reset-now', {method:'POST'});
+  toast('✅ لیدربورد ریست شد');
+  renderLeaderboardAdmin();
+}
+
+/* ===================== CARD TASKS ===================== */
+async function renderCardTasksAdmin(){
+  const m = document.getElementById('main');
+  m.innerHTML = `
+    <div class="page-head">
+      <div><h1>تسک کارت</h1><p>تسک‌های مجزا برای دریافت کارت رایگان — جدا از تسک‌های عمومی ربات</p></div>
+      <button class="btn small" onclick="openCardTaskForm()">+ افزودن تسک کارت</button>
+    </div>
+    <div class="panel" style="padding:0;"><table>
+      <thead><tr><th>عنوان</th><th>نوع</th><th>کارت جایزه</th><th>تعداد انجام</th><th>وضعیت</th><th></th></tr></thead>
+      <tbody id="ct-tbody"><tr class="empty-row"><td colspan="6">در حال بارگذاری…</td></tr></tbody>
+    </table></div>
+  `;
+  const rows = await api('/card-tasks');
+  const typeLabel = {join_channel:'عضویت در کانال', link:'لینک ساده'};
+  document.getElementById('ct-tbody').innerHTML = rows.length ? rows.map(t=>`
+    <tr>
+      <td>${t.title}<div style="color:var(--text-2); font-size:10.5px;">${t.id}</div></td>
+      <td>${typeLabel[t.type]||t.type}</td>
+      <td>🃏 ${t.reward_card_id}</td>
+      <td>${fmt(t.completions)}</td>
+      <td><span class="pill ${t.active?'active':'failed'}">${t.active?'فعال':'غیرفعال'}</span></td>
+      <td style="display:flex; gap:6px;">
+        <button class="btn secondary small" onclick='openCardTaskForm(${JSON.stringify(t)})'>ویرایش</button>
+        <button class="btn danger small" onclick="deleteCardTaskUI('${t.id}')">حذف</button>
+      </td>
+    </tr>
+  `).join('') : `<tr class="empty-row"><td colspan="6">تسکی ثبت نشده</td></tr>`;
+}
+function onCardTaskTypeChange(){
+  const type = document.getElementById('ctf-type').value;
+  document.getElementById('ctf-channel-wrap').style.display = type==='join_channel' ? 'block':'none';
+  document.getElementById('ctf-link-wrap').style.display = type==='link' ? 'block':'none';
+}
+async function openCardTaskForm(t=null){
+  const cards = await api('/game-cards');
+  openModal(`
+    <div class="modal-title">${t?'ویرایش تسک کارت':'افزودن تسک کارت'} <span class="x" onclick="closeModal()">✕</span></div>
+    <div class="field"><label>شناسه (فقط برای تسک جدید)</label><input id="ctf-id" value="${t?.id||''}" ${t?'disabled':''}></div>
+    <div class="field"><label>عنوان</label><input id="ctf-title" value="${t?.title||''}"></div>
+    <div class="field"><label>توضیحات</label><input id="ctf-desc" value="${t?.description||''}"></div>
+    <div class="field"><label>نوع تسک</label>
+      <select id="ctf-type" onchange="onCardTaskTypeChange()">
+        <option value="join_channel" ${t?.type==='join_channel'?'selected':''}>عضویت در کانال</option>
+        <option value="link" ${t?.type==='link'?'selected':''}>لینک ساده</option>
+      </select>
+    </div>
+    <div class="field" id="ctf-channel-wrap"><label>یوزرنیم کانال (بدون @)</label><input id="ctf-channel" value="${t?.channel_username||''}"></div>
+    <div class="field" id="ctf-link-wrap" style="display:none;"><label>لینک</label><input id="ctf-link" value="${t?.link||''}"></div>
+    <div class="field"><label>کارت جایزه</label>
+      <select id="ctf-card">${cards.map(c=>`<option value="${c.id}" ${t?.reward_card_id===c.id?'selected':''}>${c.name} (قدرت ${c.power})</option>`).join('')}</select>
+    </div>
+    ${t ? `<div class="field"><label>وضعیت</label><select id="ctf-active"><option value="1" ${t.active?'selected':''}>فعال</option><option value="0" ${!t.active?'selected':''}>غیرفعال</option></select></div>` : ''}
+    <button class="btn" onclick="saveCardTask(${t?`'${t.id}'`:'null'})">ذخیره</button>
+  `);
+  onCardTaskTypeChange();
+}
+async function saveCardTask(existingId){
+  const body = {
+    title: document.getElementById('ctf-title').value,
+    description: document.getElementById('ctf-desc').value,
+    type: document.getElementById('ctf-type').value,
+    channel_username: document.getElementById('ctf-channel').value || null,
+    link: document.getElementById('ctf-link').value || null,
+    reward_card_id: document.getElementById('ctf-card').value,
+  };
+  if(!body.title){ toast('❌ عنوان الزامی است'); return; }
+  if(existingId){
+    body.active = Number(document.getElementById('ctf-active').value);
+    await api(`/card-tasks/${existingId}`, {method:'PATCH', body:JSON.stringify(body)});
+  } else {
+    const id = document.getElementById('ctf-id').value.trim();
+    if(!id){ toast('❌ شناسه تسک را وارد کن'); return; }
+    await api('/card-tasks', {method:'POST', body:JSON.stringify({id, ...body})});
+  }
+  toast('✅ تسک کارت ذخیره شد');
+  closeModal();
+  renderCardTasksAdmin();
+}
+async function deleteCardTaskUI(id){
+  if(!confirm('این تسک حذف شود؟')) return;
+  await api(`/card-tasks/${id}`, {method:'DELETE'});
+  toast('🗑 حذف شد');
+  renderCardTasksAdmin();
 }
 
 /* ===================== INIT ===================== */
