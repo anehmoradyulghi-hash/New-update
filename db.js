@@ -241,6 +241,15 @@ tryAddColumn(`ALTER TABLE game_matches ADD COLUMN player1_cards TEXT`);
 tryAddColumn(`ALTER TABLE game_matches ADD COLUMN player2_cards TEXT`);
 tryAddColumn(`ALTER TABLE gift_listings ADD COLUMN category TEXT`);
 
+// ارزهای ثابت پلتفرم — فقط تتر و تون(گرام)، دیگه از پنل نمی‌شه ارز جدید اضافه کرد
+const curSeed = db.prepare('SELECT COUNT(*) c FROM currencies').get();
+if (curSeed.c === 0) {
+  db.prepare(`INSERT INTO currencies (code, name, icon, deposit_address, deposit_note, min_amount, active) VALUES (?,?,?,?,?,?,1)`)
+    .run('USDT', 'تتر (USDT)', '💵', null, 'شبکه TRC20', 1);
+  db.prepare(`INSERT INTO currencies (code, name, icon, deposit_address, deposit_note, min_amount, active) VALUES (?,?,?,?,?,?,1)`)
+    .run('TON', 'تون (گرام)', '💎', null, 'شبکه TON', 1);
+}
+
 // دسته‌بندی‌های پیش‌فرض بازار گیفت (فقط یک‌بار)
 const gcSeed = db.prepare('SELECT COUNT(*) c FROM gift_categories').get();
 if (gcSeed.c === 0) {
