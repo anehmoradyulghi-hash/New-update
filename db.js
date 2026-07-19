@@ -150,6 +150,31 @@ CREATE TABLE IF NOT EXISTS leaderboard_prizes (
   prize_text TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS game_settings (
+  key TEXT PRIMARY KEY,
+  value TEXT
+);
+
+CREATE TABLE IF NOT EXISTS card_tasks (
+  id TEXT PRIMARY KEY,
+  title TEXT NOT NULL,
+  description TEXT,
+  type TEXT NOT NULL DEFAULT 'link',   -- join_channel | link
+  channel_username TEXT,
+  link TEXT,
+  reward_card_id TEXT NOT NULL,
+  active INTEGER NOT NULL DEFAULT 1,
+  created_at TEXT DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS card_task_completions (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  tg_id INTEGER NOT NULL,
+  task_id TEXT NOT NULL,
+  created_at TEXT DEFAULT (datetime('now')),
+  UNIQUE(tg_id, task_id)
+);
+
 CREATE TABLE IF NOT EXISTS products (
   id TEXT PRIMARY KEY,
   category TEXT NOT NULL,
@@ -211,6 +236,9 @@ tryAddColumn(`ALTER TABLE game_cards ADD COLUMN upgrade_cost REAL NOT NULL DEFAU
 tryAddColumn(`ALTER TABLE game_cards ADD COLUMN upgrade_currency TEXT NOT NULL DEFAULT 'RIAL'`);
 tryAddColumn(`ALTER TABLE game_cards ADD COLUMN max_level INTEGER NOT NULL DEFAULT 5`);
 tryAddColumn(`ALTER TABLE game_cards ADD COLUMN power_per_level INTEGER NOT NULL DEFAULT 5`);
+tryAddColumn(`ALTER TABLE user_cards ADD COLUMN bonus_power INTEGER NOT NULL DEFAULT 0`);
+tryAddColumn(`ALTER TABLE game_matches ADD COLUMN player1_cards TEXT`);
+tryAddColumn(`ALTER TABLE game_matches ADD COLUMN player2_cards TEXT`);
 tryAddColumn(`ALTER TABLE gift_listings ADD COLUMN category TEXT`);
 
 // دسته‌بندی‌های پیش‌فرض بازار گیفت (فقط یک‌بار)
@@ -390,8 +418,8 @@ export function updateGameCard(id, fields) {
 export function deleteGameCard(id) {
   db.prepare('DELETE FROM game_cards WHERE id = ?').run(id);
 }
-export function effectivePower(card, level) {
-  return card.power + (level - 1) * card.power_per_level;
+export function effectivePower(card, level, bonusPower = 0) {
+  return card.power + (level - 1) * card.power_per_level + (bonusPower || 0);
 }
 
 // ---- inventory ----
@@ -400,11 +428,11 @@ export function grantCard(tgId, cardId) {
 }
 export function getUserCards(tgId) {
   const rows = db.prepare(`
-    SELECT uc.id AS user_card_id, uc.acquired_at, uc.level, c.*
+    SELECT uc.id AS user_card_id, uc.acquired_at, uc.level, uc.bonus_power, c.*
     FROM user_cards uc JOIN game_cards c ON c.id = uc.card_id
     WHERE uc.tg_id = ? ORDER BY uc.acquired_at DESC
   `).all(tgId);
-  return rows.map(r => ({ ...r, effective_power: effectivePower(r, r.level) }));
+  return rows.map(r => ({ ...r, effective_power: effectivePower(r, r.level, r.bonus_power) }));
 }
 export function upgradeUserCard(tgId, userCardId) {
   const row = db.prepare(`
@@ -433,6 +461,26 @@ export function upgradeUserCard(tgId, userCardId) {
   }
   db.prepare('UPDATE user_cards SET level = level + 1 WHERE id = ?').run(userCardId);
   return { newLevel: row.level + 1, cost };
+}
+
+// ارتقا با قربانی کردن یک کارت دیگه — نصف قدرت موثر کارت قربانی‌شده به‌عنوان بونوس دائمی اضافه می‌شه
+export function sacrificeUpgradeCard(tgId, targetUserCardId, sacrificeUserCardId) {
+  if (targetUserCardId === sacrificeUserCardId) throw new Error('نمی‌تونی یه کارت رو قربانی خودش کنی');
+  const target = db.prepare(`
+    SELECT uc.*, c.name, c.power_per_level FROM user_cards uc JOIN game_cards c ON c.id = uc.card_id WHERE uc.id = ?
+  `).get(targetUserCardId);
+  const sac = db.prepare(`
+    SELECT uc.*, c.power, c.power_per_level FROM user_cards uc JOIN game_cards c ON c.id = uc.card_id WHERE uc.id = ?
+  `).get(sacrificeUserCardId);
+  if (!target || target.tg_id !== Number(tgId)) throw new Error('کارت هدف مال تو نیست');
+  if (!sac || sac.tg_id !== Number(tgId)) throw new Error('کارت قربانی مال تو نیست');
+
+  const sacPower = effectivePower(sac, sac.level, sac.bonus_power);
+  const boost = Math.floor(sacPower / 2);
+
+  db.prepare('DELETE FROM user_cards WHERE id = ?').run(sacrificeUserCardId);
+  db.prepare('UPDATE user_cards SET bonus_power = bonus_power + ? WHERE id = ?').run(boost, targetUserCardId);
+  return { boost, sacrificedName: sac.card_id };
 }
 // می‌خرد و مستقیم به کیف‌پول (ریال/استارز/ارز دیگه) وصل می‌شه؛ خرید فوریه چون قیمت‌ها از قبل مشخصن
 export function buyGameCard(tgId, cardId) {
@@ -477,17 +525,27 @@ function incrementPlaysUsed(tgId) {
 }
 
 // ---- matchmaking (async: whoever joins second instantly resolves the match) ----
+function resolveCardSnapshot(userCardIds) {
+  if (!userCardIds || !userCardIds.length) return [];
+  const rows = db.prepare(`
+    SELECT uc.level, uc.bonus_power, c.name, c.power, c.power_per_level, c.image_url
+    FROM user_cards uc JOIN game_cards c ON c.id = uc.card_id
+    WHERE uc.id IN (${userCardIds.map(() => '?').join(',')})
+  `).all(...userCardIds);
+  return rows.map(r => ({ name: r.name, image_url: r.image_url, level: r.level, power: effectivePower(r, r.level, r.bonus_power) }));
+}
+
 export function joinQueue(tgId, userCardIds, minDeckSize) {
   if (!Array.isArray(userCardIds) || userCardIds.length < minDeckSize) {
     throw new Error(`حداقل ${minDeckSize} کارت باید انتخاب کنی`);
   }
-  const owned = db.prepare(`SELECT id, card_id, level FROM user_cards WHERE tg_id = ? AND id IN (${userCardIds.map(() => '?').join(',')})`)
+  const owned = db.prepare(`SELECT id, card_id, level, bonus_power FROM user_cards WHERE tg_id = ? AND id IN (${userCardIds.map(() => '?').join(',')})`)
     .all(tgId, ...userCardIds);
   if (owned.length !== userCardIds.length) throw new Error('یکی از کارت‌ها مال تو نیست');
 
   const power = owned.reduce((sum, uc) => {
     const card = getGameCard(uc.card_id);
-    return sum + (card ? effectivePower(card, uc.level) : 0);
+    return sum + (card ? effectivePower(card, uc.level, uc.bonus_power) : 0);
   }, 0);
 
   // پاک کردن صف‌های منقضی‌شده (بیشتر از ۵ دقیقه)
@@ -501,9 +559,14 @@ export function joinQueue(tgId, userCardIds, minDeckSize) {
     const oppPower = opponent.power + Math.floor(opponent.power * (Math.random() * 0.3 - 0.15));
     const winnerTgId = myPower >= oppPower ? tgId : opponent.tg_id;
 
+    const myCards = JSON.stringify(resolveCardSnapshot(userCardIds));
+    const oppCards = JSON.stringify(resolveCardSnapshot(JSON.parse(opponent.card_ids)));
+
     db.prepare(`UPDATE game_queue SET status = 'matched' WHERE id = ?`).run(opponent.id);
-    const info = db.prepare(`INSERT INTO game_matches (player1_tg_id, player2_tg_id, player1_power, player2_power, winner_tg_id) VALUES (?,?,?,?,?)`)
-      .run(opponent.tg_id, tgId, oppPower, myPower, winnerTgId);
+    const info = db.prepare(`
+      INSERT INTO game_matches (player1_tg_id, player2_tg_id, player1_power, player2_power, winner_tg_id, player1_cards, player2_cards)
+      VALUES (?,?,?,?,?,?,?)
+    `).run(opponent.tg_id, tgId, oppPower, myPower, winnerTgId, oppCards, myCards);
 
     bumpScore(opponent.tg_id, opponent.tg_id === winnerTgId);
     bumpScore(tgId, tgId === winnerTgId);
@@ -532,8 +595,10 @@ export function getQueueStatus(tgId) {
     return { inQueue: true };
   }
   if (row.status === 'matched') {
-    // آخرین مسابقه‌ای که این کاربر توش شرکت داشته
+    // آخرین مسابقه‌ای که این کاربر توش شرکت داشته — بعد از نمایش یک‌بار، وضعیت رو seen می‌کنیم
+    // تا کاربر گیر نکنه و بتونه دوباره وارد نبرد جدید بشه (باگ قبلی همینجا بود)
     const match = db.prepare(`SELECT * FROM game_matches WHERE player1_tg_id = ? OR player2_tg_id = ? ORDER BY created_at DESC LIMIT 1`).get(tgId, tgId);
+    db.prepare(`UPDATE game_queue SET status = 'seen' WHERE id = ?`).run(row.id);
     if (match) {
       const iAmP1 = match.player1_tg_id === Number(tgId);
       return {
@@ -569,6 +634,65 @@ export function getMyRank(tgId) {
     WHERE points > (SELECT points FROM game_scores WHERE tg_id = ?)
   `).get(tgId);
   return row.rank;
+}
+
+// ---- match history ----
+export function getMatchHistory(tgId, limit = 30) {
+  const rows = db.prepare(`
+    SELECT m.*, u1.username AS p1_username, u1.first_name AS p1_first_name,
+           u2.username AS p2_username, u2.first_name AS p2_first_name
+    FROM game_matches m
+    JOIN users u1 ON u1.tg_id = m.player1_tg_id
+    JOIN users u2 ON u2.tg_id = m.player2_tg_id
+    WHERE m.player1_tg_id = ? OR m.player2_tg_id = ?
+    ORDER BY m.created_at DESC LIMIT ?
+  `).all(tgId, tgId, limit);
+  return rows.map(m => {
+    const iAmP1 = m.player1_tg_id === Number(tgId);
+    return {
+      id: m.id, created_at: m.created_at,
+      won: m.winner_tg_id === Number(tgId),
+      myPower: iAmP1 ? m.player1_power : m.player2_power,
+      oppPower: iAmP1 ? m.player2_power : m.player1_power,
+      opponentName: iAmP1 ? (m.p2_first_name || 'کاربر') : (m.p1_first_name || 'کاربر'),
+      opponentUsername: iAmP1 ? m.p2_username : m.p1_username,
+      myCards: JSON.parse((iAmP1 ? m.player1_cards : m.player2_cards) || '[]'),
+      oppCards: JSON.parse((iAmP1 ? m.player2_cards : m.player1_cards) || '[]'),
+    };
+  });
+}
+
+// ---- leaderboard settings / reset ----
+function getSetting(key, fallback) {
+  const row = db.prepare('SELECT value FROM game_settings WHERE key = ?').get(key);
+  return row ? row.value : fallback;
+}
+function setSetting(key, value) {
+  db.prepare(`INSERT INTO game_settings (key, value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value = excluded.value`).run(key, String(value));
+}
+export function getLeaderboardResetInfo() {
+  const intervalDays = Number(getSetting('lb_reset_interval_days', 7));
+  let lastReset = getSetting('lb_last_reset', null);
+  if (!lastReset) {
+    lastReset = new Date().toISOString();
+    setSetting('lb_last_reset', lastReset);
+  }
+  const nextReset = new Date(lastReset).getTime() + intervalDays * 24 * 60 * 60 * 1000;
+  return { intervalDays, lastReset, nextReset };
+}
+export function checkAndAutoResetLeaderboard() {
+  const { nextReset, intervalDays } = getLeaderboardResetInfo();
+  if (Date.now() >= nextReset) {
+    resetLeaderboard();
+    setSetting('lb_reset_interval_days', intervalDays); // حفظ همون فاصله برای دور بعد
+  }
+}
+export function resetLeaderboard() {
+  db.prepare('DELETE FROM game_scores').run();
+  setSetting('lb_last_reset', new Date().toISOString());
+}
+export function setLeaderboardResetInterval(days) {
+  setSetting('lb_reset_interval_days', days);
 }
 export function listLeaderboardPrizes() {
   return db.prepare('SELECT * FROM leaderboard_prizes ORDER BY rank_from').all();
@@ -754,4 +878,41 @@ export function getAllCurrencyRequestsForAdmin() {
     JOIN users u ON u.tg_id = r.tg_id
     ORDER BY r.created_at DESC LIMIT 200
   `).all();
+}
+
+/* ===================== CARD TASKS (separate from general bot tasks) ===================== */
+export function listActiveCardTasks() {
+  return db.prepare(`
+    SELECT ct.*, gc.name AS card_name, gc.image_url AS card_image, gc.power AS card_power
+    FROM card_tasks ct JOIN game_cards gc ON gc.id = ct.reward_card_id
+    WHERE ct.active = 1 ORDER BY ct.created_at
+  `).all();
+}
+export function isCardTaskDone(tgId, taskId) {
+  return !!db.prepare('SELECT 1 FROM card_task_completions WHERE tg_id = ? AND task_id = ?').get(tgId, taskId);
+}
+export function completeCardTask(tgId, task) {
+  db.prepare('INSERT OR IGNORE INTO card_task_completions (tg_id, task_id) VALUES (?,?)').run(tgId, task.id);
+  grantCard(tgId, task.reward_card_id);
+}
+export function listAllCardTasksForAdmin() {
+  return db.prepare(`
+    SELECT ct.*, (SELECT COUNT(*) FROM card_task_completions c WHERE c.task_id = ct.id) AS completions
+    FROM card_tasks ct ORDER BY ct.created_at DESC
+  `).all();
+}
+export function addCardTask(id, title, description, type, channelUsername, link, rewardCardId) {
+  db.prepare(`INSERT INTO card_tasks (id, title, description, type, channel_username, link, reward_card_id) VALUES (?,?,?,?,?,?,?)`)
+    .run(id, title, description || '', type, channelUsername || null, link || null, rewardCardId);
+}
+export function updateCardTask(id, fields) {
+  const t = db.prepare('SELECT * FROM card_tasks WHERE id = ?').get(id);
+  if (!t) throw new Error('تسک پیدا نشد');
+  db.prepare(`UPDATE card_tasks SET title=?, description=?, type=?, channel_username=?, link=?, reward_card_id=?, active=? WHERE id=?`)
+    .run(fields.title ?? t.title, fields.description ?? t.description, fields.type ?? t.type,
+         fields.channel_username ?? t.channel_username, fields.link ?? t.link,
+         fields.reward_card_id ?? t.reward_card_id, fields.active ?? t.active, id);
+}
+export function deleteCardTask(id) {
+  db.prepare('DELETE FROM card_tasks WHERE id = ?').run(id);
 }
