@@ -1343,36 +1343,28 @@ function updateHeaderChip(){
 /* ===================== OTHER CURRENCIES (TON, USDT, ...) ===================== */
 let curDefs = [];
 let curSelected = null;
-function renderCurrencyList(balances, priceMap){
-  const wrap = document.getElementById('other-currencies-list');
-  if (!curDefs.length) { wrap.innerHTML = `<div class="empty"><p>ارزی تعریف نشده</p></div>`; return; }
-  wrap.innerHTML = `
-    <button class="hero-cta" style="width:100%; margin-bottom:12px; background:linear-gradient(135deg,var(--violet),var(--violet-2)); color:#fff;" onclick="openSwapSheet()">🔄 تبدیل ریال ⇄ تتر/تون</button>
-    ${balances.map(b => `
-    <div class="tx-item" style="border:1px solid var(--border); border-radius:12px; padding:12px; margin-bottom:8px;">
-      <div class="tx-icon in">${b.icon}</div>
-      <div class="tx-mid"><div class="t1">${b.name}</div><div class="t2">${b.amount} ${b.code}${priceMap[b.code] ? ` — ${fmt(priceMap[b.code])} ت` : ''}</div></div>
-      <div style="display:flex; gap:6px;">
-        <button class="wbtn primary" style="padding:8px 12px;" onclick="openCurDeposit('${b.code}')">واریز</button>
-        <button class="wbtn" style="padding:8px 12px;" onclick="openCurWithdraw('${b.code}', ${b.amount})">برداشت</button>
-      </div>
-    </div>
-  `).join('')}`;
-}
 async function renderOtherCurrencies(){
   const wrap = document.getElementById('other-currencies-list');
   wrap.innerHTML = `<div class="empty"><p>در حال بارگذاری…</p></div>`;
-  let defs, balances;
   try {
-    [defs, balances] = await Promise.all([ api('/api/currencies'), api('/api/wallet/balances') ]);
-  } catch (e) { showToast('❌ ' + e.message); return; }
-  curDefs = defs;
-  // موجودی‌ها فوراً نمایش داده می‌شن؛ قیمت لحظه‌ای جدا و بدون قفل‌کردن صفحه لود می‌شه
-  renderCurrencyList(balances, {});
-  api('/api/prices').then(prices => {
+    const [defs, balances, prices] = await Promise.all([ api('/api/currencies'), api('/api/wallet/balances'), api('/api/prices') ]);
+    curDefs = defs;
     state.prices = prices;
-    if (state.page === 'wallet') renderCurrencyList(balances, { USDT: prices.usdt, TON: prices.ton });
-  }).catch(() => { /* قیمت لحظه‌ای در دسترس نیست، مشکلی نیست - بقیه‌ی کیف‌پول کار می‌کنه */ });
+    if (!defs.length) { wrap.innerHTML = `<div class="empty"><p>ارزی تعریف نشده</p></div>`; return; }
+    const priceMap = { USDT: prices.usdt, TON: prices.ton };
+    wrap.innerHTML = `
+      <button class="hero-cta" style="width:100%; margin-bottom:12px; background:linear-gradient(135deg,var(--violet),var(--violet-2)); color:#fff;" onclick="openSwapSheet()">🔄 تبدیل ریال ⇄ تتر/تون</button>
+      ${balances.map(b => `
+      <div class="tx-item" style="border:1px solid var(--border); border-radius:12px; padding:12px; margin-bottom:8px;">
+        <div class="tx-icon in">${b.icon}</div>
+        <div class="tx-mid"><div class="t1">${b.name}</div><div class="t2">${b.amount} ${b.code}${priceMap[b.code] ? ` — ${fmt(priceMap[b.code])} ت` : ''}</div></div>
+        <div style="display:flex; gap:6px;">
+          <button class="wbtn primary" style="padding:8px 12px;" onclick="openCurDeposit('${b.code}')">واریز</button>
+          <button class="wbtn" style="padding:8px 12px;" onclick="openCurWithdraw('${b.code}', ${b.amount})">برداشت</button>
+        </div>
+      </div>
+    `).join('')}`;
+  } catch (e) { showToast('❌ ' + e.message); }
 }
 let swapToCrypto = true;
 function openSwapSheet(){
@@ -1975,169 +1967,4 @@ async function buyGameCard(id){
     await api('/api/game/buy-card', { method:'POST', body: JSON.stringify({ cardId: id }) });
     await refreshMe();
     haptic('heavy');
-    showToast('✅ کارت خریداری شد');
-    if (cgTab === 'shop') renderCgShop();
-  } catch (e) { showToast('❌ ' + e.message); }
-}
-
-/* ===================== CARD GAME — BATTLE (matchmaking) ===================== */
-async function renderCgBattle(){
-  const wrap = document.getElementById('cg-content');
-  wrap.innerHTML = `<div class="empty"><p>در حال بارگذاری…</p></div>`;
-  if (cgQueuePoll) { clearInterval(cgQueuePoll); cgQueuePoll = null; }
-  try {
-    const [status, myCards] = await Promise.all([ api('/api/game/status'), api('/api/game/my-cards') ]);
-    cgMyCards = myCards;
-
-    if (status.inQueue) {
-      wrap.innerHTML = `
-        <div class="panel" style="text-align:center; padding:30px 16px;">
-          <div style="font-size:34px; margin-bottom:10px;">⏳</div>
-          <div style="font-size:13px; font-weight:800; margin-bottom:6px;">در صف مسابقه‌ای…</div>
-          <div style="font-size:11px; color:var(--text-2); margin-bottom:18px;">به محض پیدا شدن حریف، نتیجه اینجا نشون داده می‌شه</div>
-          <button class="btn-ghost" onclick="cancelGameQueue()">لغو صف</button>
-        </div>`;
-      cgQueuePoll = setInterval(pollGameQueue, 3000);
-      return;
-    }
-
-    if (status.playsRemaining <= 0) {
-      wrap.innerHTML = `
-        <div class="empty">
-          <div class="e-icon">⚡</div>
-          <p>سهمیه بازی امروزت تموم شده</p>
-          <button class="addbtn" style="width:auto; padding:0 16px; height:34px; border-radius:9px; margin-top:12px;" onclick="buyExtraPlays()">خرید ${fmt(status.extraPlayPrice)} تومان برای ${status.extraPlayCount} بازی اضافه</button>
-        </div>`;
-      return;
-    }
-
-    if (!cgMyCards.length) {
-      wrap.innerHTML = `<div class="empty"><div class="e-icon">🎒</div><p>اول از فروشگاه یا تسک‌ها کارت بگیر</p></div>`;
-      return;
-    }
-
-    cgDeckSelection = new Set([...cgDeckSelection].filter(id => cgMyCards.some(c => c.user_card_id === id)));
-    renderDeckPicker(status.minDeckSize);
-  } catch (e) { showToast('❌ ' + e.message); }
-}
-function renderDeckPicker(minDeckSize){
-  const wrap = document.getElementById('cg-content');
-  wrap.innerHTML = `
-    <div style="font-size:11px; color:var(--text-2); margin-bottom:10px;">حداقل ${minDeckSize} کارت برای شروع نبرد انتخاب کن (${cgDeckSelection.size} انتخاب شده)</div>
-    <div class="grid" id="deck-grid">${cgMyCards.map(c => {
-      const r = cardRarityStyle(c.effective_power);
-      const sel = cgDeckSelection.has(c.user_card_id);
-      return `
-      <div class="game-card" style="--rarity:${r.color}; --rarity-glow:${r.glow}; ${sel ? 'outline:2px solid var(--violet); outline-offset:2px;' : ''}" onclick="toggleDeckCard(${c.user_card_id})">
-        ${c.image_url ? `<img class="gc-img" src="${c.image_url}">` : `<div class="gc-noimg">🃏</div>`}
-        <div class="gc-power">⚡ ${c.effective_power}</div>
-        <div class="gc-level">Lv${c.level}</div>
-        <div class="gc-body">
-          <div class="gc-name">${c.name}</div>
-          <div class="gc-sub" style="color:${sel ? 'var(--violet)' : r.color};">${sel ? '✓ انتخاب شد' : r.label}</div>
-        </div>
-      </div>
-    `;}).join('')}</div>
-    <button class="hero-cta" style="width:100%; margin-top:16px; background:linear-gradient(135deg,var(--violet),var(--violet-2)); color:#fff;" ${cgDeckSelection.size < minDeckSize ? 'disabled style="opacity:.5;"' : ''} onclick="joinGameQueue(${minDeckSize})">⚔️ شروع نبرد</button>
-  `;
-}
-function toggleDeckCard(userCardId){
-  if (cgDeckSelection.has(userCardId)) cgDeckSelection.delete(userCardId);
-  else cgDeckSelection.add(userCardId);
-  haptic('light');
-  renderDeckPicker(cgMyCards.length ? Math.min(5, cgMyCards.length) : 5);
-}
-async function joinGameQueue(minDeckSize){
-  if (cgDeckSelection.size < minDeckSize) { showToast(`❌ حداقل ${minDeckSize} کارت انتخاب کن`); return; }
-  try {
-    const result = await api('/api/game/queue', { method:'POST', body: JSON.stringify({ cardIds: [...cgDeckSelection] }) });
-    haptic('medium');
-    if (result.matched) {
-      showToast(result.won ? `🏆 بردی! قدرت تو: ${result.myPower} — حریف: ${result.oppPower}` : `💔 باختی. قدرت تو: ${result.myPower} — حریف: ${result.oppPower}`);
-      await renderArenaHeader();
-      renderCgBattle();
-    } else {
-      showToast('⏳ وارد صف شدی، منتظر حریف باش');
-      renderCgBattle();
-    }
-  } catch (e) { showToast('❌ ' + e.message); }
-}
-async function pollGameQueue(){
-  try {
-    const status = await api('/api/game/queue-status');
-    if (status.justMatched) {
-      if (cgQueuePoll) { clearInterval(cgQueuePoll); cgQueuePoll = null; }
-      haptic('heavy');
-      showToast(status.won ? `🏆 بردی! قدرت تو: ${status.myPower} — حریف: ${status.oppPower}` : `💔 باختی. قدرت تو: ${status.myPower} — حریف: ${status.oppPower}`);
-      await refreshMe();
-      await renderArenaHeader();
-      if (cgTab === 'battle') renderCgBattle();
-    } else if (!status.inQueue) {
-      if (cgQueuePoll) { clearInterval(cgQueuePoll); cgQueuePoll = null; }
-      if (cgTab === 'battle') renderCgBattle();
-    }
-  } catch (e) {}
-}
-async function cancelGameQueue(){
-  if (cgQueuePoll) { clearInterval(cgQueuePoll); cgQueuePoll = null; }
-  try { await api('/api/game/queue/cancel', { method:'POST' }); renderCgBattle(); }
-  catch (e) { showToast('❌ ' + e.message); }
-}
-async function buyExtraPlays(){
-  try {
-    await api('/api/game/buy-extra-plays', { method:'POST' });
-    await refreshMe();
-    haptic('heavy');
-    showToast('✅ بازی اضافه خریداری شد');
-    renderCgBattle();
-  } catch (e) { showToast('❌ ' + e.message); }
-}
-
-/* ===================== CARD GAME — LEADERBOARD ===================== */
-async function renderCgBoard(){
-  const wrap = document.getElementById('cg-content');
-  wrap.innerHTML = `<div class="empty"><p>در حال بارگذاری…</p></div>`;
-  try {
-    const { rows, prizes, reset } = await api('/api/game/leaderboard');
-    const medal = i => i===0 ? '🥇' : i===1 ? '🥈' : i===2 ? '🥉' : `#${i+1}`;
-    const nextResetDays = reset?.nextReset ? Math.max(0, Math.ceil((reset.nextReset - Date.now()) / 86400000)) : null;
-    wrap.innerHTML = `
-      ${nextResetDays !== null ? `<div style="font-size:10.5px; color:var(--text-2); margin-bottom:10px; text-align:center;">🔄 لیدربورد تا ${nextResetDays} روز دیگه ریست می‌شه</div>` : ''}
-      ${prizes.length ? `
-      <div class="panel" style="margin-bottom:14px;">
-        <div style="font-size:12px; font-weight:800; margin-bottom:8px;">🎁 جایزه‌های این دوره</div>
-        ${prizes.map(p => `<div style="font-size:11px; color:var(--text-1); padding:4px 0;">رتبه ${p.rank_from}${p.rank_to!==p.rank_from ? '-'+p.rank_to : ''}: ${p.prize_text}</div>`).join('')}
-      </div>` : ''}
-      ${rows.length ? rows.map((r,i) => `
-        <div class="tx-item" style="border:1px solid var(--border); border-radius:12px; padding:10px 12px; margin-bottom:6px;">
-          <div class="tx-icon in" style="font-size:15px;">${medal(i)}</div>
-          <div class="tx-mid"><div class="t1">${r.first_name || 'کاربر'}${r.username ? ' @'+r.username : ''}</div><div class="t2">${r.wins} برد — ${r.losses} باخت</div></div>
-          <div style="font-weight:800; font-size:12.5px; color:var(--gold-1);">${fmt(r.points)}</div>
-        </div>
-      `).join('') : `<div class="empty"><div class="e-icon">🏆</div><p>هنوز کسی امتیاز نگرفته</p></div>`}
-    `;
-  } catch (e) { showToast('❌ ' + e.message); }
-}
-
-/* ===================== TOAST ===================== */
-let toastTimer = null;
-function showToast(msg){
-  const el = document.getElementById('toast');
-  el.textContent = msg;
-  el.classList.add('show');
-  clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => el.classList.remove('show'), 2600);
-}
-
-/* ===================== REFERRAL ===================== */
-function withdrawRef(){
-  // پورسانت رفرال همون لحظه‌ی خرید زیرمجموعه مستقیم به کیف‌پول ریالی واریز می‌شه،
-  // پس چیزی جدا برای برداشت نمونده — این دکمه فقط برای شفاف‌سازی به کاربر توضیح می‌ده.
-  showToast('💰 پورسانت‌ها خودکار و بلافاصله به کیف‌پولت واریز می‌شن');
-}
-
-/* ===================== START ===================== */
-boot();
-</script>
-</body>
-</html>
+    showToast('✅ کا
