@@ -270,6 +270,7 @@
   .profile-head b{font-size:15.5px; font-weight:800; display:block;}
   .profile-head span{font-size:11.5px; color:var(--text-2);}
   .list-card{background:var(--surface); border:1px solid var(--border); border-radius:var(--radius-md); overflow:hidden; margin-bottom:16px;}
+  .panel{background:var(--surface); border:1px solid var(--border); border-radius:var(--radius-md); padding:14px;}
   .list-row{
     display:flex; align-items:center; gap:12px; padding:13px 15px; border-bottom:1px solid var(--border);
     cursor:pointer;
@@ -550,13 +551,13 @@
       </div>
 
       <!-- Daily Wheel — compact, secondary -->
-      <div class="panel" style="display:flex; align-items:center; gap:14px; margin-bottom:16px;">
+      <div class="panel" style="display:flex; align-items:center; gap:14px; margin-bottom:16px; cursor:pointer;" onclick="openWheelSheet()">
         <div style="font-size:30px;">🎡</div>
         <div style="flex:1;">
           <div style="font-size:12.5px; font-weight:800;">چرخ شانس روزانه</div>
-          <div style="font-size:10.5px; color:var(--text-2); margin-top:2px;" id="wheel-status">رایگان — بدون ریسک</div>
+          <div style="font-size:10.5px; color:var(--text-2); margin-top:2px;" id="wheel-status-mini">رایگان — بدون ریسک</div>
         </div>
-        <button class="wbtn primary" style="width:auto; padding:9px 16px;" id="wheel-btn" onclick="spinWheel()">بچرخون</button>
+        <div class="chev" style="font-size:18px; color:var(--text-2);">‹</div>
       </div>
 
       <div class="list-card">
@@ -589,6 +590,7 @@
         <button class="chip" id="cg-tab-inventory" onclick="switchCardGameTab('inventory')">🎒 کارت‌های من</button>
         <button class="chip" id="cg-tab-battle" onclick="switchCardGameTab('battle')">⚔️ نبرد</button>
         <button class="chip" id="cg-tab-freecards" onclick="switchCardGameTab('freecards')">🎁 تسک کارت</button>
+        <button class="chip" id="cg-tab-history" onclick="switchCardGameTab('history')">📜 تاریخچه</button>
         <button class="chip" id="cg-tab-board" onclick="switchCardGameTab('board')">🏆 لیدربورد</button>
       </div>
       <div id="cg-content"></div>
@@ -714,6 +716,32 @@
     <input class="input-box" id="cd-amount" placeholder="مقدار واریزی…" inputmode="decimal">
     <input class="input-box" id="cd-txhash" placeholder="هش تراکنش یا کد رهگیری">
     <button class="btn-main" onclick="confirmCurDeposit()">ثبت درخواست واریز</button>
+  </div>
+</div>
+
+<!-- ===== DAILY WHEEL SHEET (animated) ===== -->
+<div class="overlay" id="overlay-wheel" onclick="if(event.target===this) closeSheet('overlay-wheel')">
+  <div class="sheet" style="text-align:center;">
+    <div class="sheet-handle"></div>
+    <div class="sheet-title">🎡 چرخ شانس روزانه <span class="x" onclick="closeSheet('overlay-wheel')">✕</span></div>
+    <div style="position:relative; width:230px; height:230px; margin:10px auto 18px;">
+      <div style="position:absolute; top:-6px; left:50%; transform:translateX(-50%); width:0; height:0; border-left:11px solid transparent; border-right:11px solid transparent; border-top:18px solid var(--gold-1); z-index:5; filter:drop-shadow(0 2px 4px rgba(0,0,0,.4));"></div>
+      <div id="wheel-disc" style="width:100%; height:100%; border-radius:50%; border:4px solid var(--surface-3); box-shadow:0 0 30px rgba(255,212,71,.15), inset 0 0 20px rgba(0,0,0,.3); transition:transform 3.2s cubic-bezier(.17,.87,.28,1);"></div>
+      <div style="position:absolute; top:50%; left:50%; transform:translate(-50%,-50%); width:54px; height:54px; border-radius:50%; background:linear-gradient(150deg,var(--gold-1),var(--gold-2)); display:flex; align-items:center; justify-content:center; font-size:20px; box-shadow:0 4px 14px rgba(244,180,0,.4); z-index:4;">🎡</div>
+    </div>
+    <div id="wheel-legend" style="display:flex; flex-wrap:wrap; gap:6px; justify-content:center; margin-bottom:16px;"></div>
+    <div style="font-size:11px; color:var(--text-2); margin-bottom:10px;" id="wheel-status"></div>
+    <button class="hero-cta" id="wheel-btn" onclick="spinWheel()">بچرخون!</button>
+  </div>
+</div>
+
+<!-- ===== SACRIFICE UPGRADE SHEET ===== -->
+<div class="overlay" id="overlay-sacrifice" onclick="if(event.target===this) closeSheet('overlay-sacrifice')">
+  <div class="sheet">
+    <div class="sheet-handle"></div>
+    <div class="sheet-title">قربانی کردن یه کارت <span class="x" onclick="closeSheet('overlay-sacrifice')">✕</span></div>
+    <div style="font-size:10.5px; color:var(--text-2); margin-bottom:12px;">کارتی که انتخاب کنی برای همیشه از بین می‌ره و نصف قدرتش به کارت هدف اضافه می‌شه.</div>
+    <div id="sac-list"></div>
   </div>
 </div>
 
@@ -1402,34 +1430,77 @@ async function doTask(id, type, channel, link){
 }
 
 /* ===================== GAMES (free daily wheel, no wagering) ===================== */
+let wheelState = null;
+let wheelSpinning = false;
 async function renderGames(){
-  document.getElementById('wheel-status').textContent = 'در حال بررسی…';
+  document.getElementById('wheel-status-mini').textContent = 'در حال بررسی…';
   try {
     const s = await api('/api/wheel/status');
-    const btn = document.getElementById('wheel-btn');
+    wheelState = s;
     document.getElementById('wheel-dot').classList.toggle('show', s.canSpin);
-    if (s.canSpin) {
-      btn.disabled = false;
-      btn.style.opacity = 1;
-      document.getElementById('wheel-status').textContent = 'امروز هنوز نچرخوندی — چرخ شانستو امتحان کن!';
-    } else {
-      btn.disabled = true;
-      btn.style.opacity = .5;
-      const remain = s.nextSpinAt - Date.now();
-      const hours = Math.max(1, Math.ceil(remain / 3600000));
-      document.getElementById('wheel-status').textContent = `دفعه بعد تا ${hours} ساعت دیگه می‌تونی بچرخونی`;
-    }
+    document.getElementById('wheel-status-mini').textContent = s.canSpin
+      ? '🎁 امروز هنوز نچرخوندی!'
+      : `⏳ ${Math.max(1, Math.ceil((s.nextSpinAt - Date.now())/3600000))} ساعت دیگه`;
   } catch (e) { showToast('❌ ' + e.message); }
 }
+const WHEEL_COLORS = ['#ffd447','#7c6cff','#33d998','#ff6b7a','#7dd3fc','#c084fc','#f4b400'];
+function openWheelSheet(){
+  if (!wheelState) return;
+  buildWheelDisc(wheelState.rewards);
+  updateWheelStatusText();
+  openSheet('overlay-wheel');
+}
+function buildWheelDisc(rewards){
+  const n = rewards.length;
+  const seg = 360 / n;
+  const stops = rewards.map((r,i) => `${WHEEL_COLORS[i % WHEEL_COLORS.length]} ${i*seg}deg ${(i+1)*seg}deg`).join(', ');
+  document.getElementById('wheel-disc').style.background = `conic-gradient(${stops})`;
+  document.getElementById('wheel-legend').innerHTML = rewards.map((r,i) => `
+    <span style="display:flex; align-items:center; gap:4px; font-size:9.5px; background:var(--surface-2); border:1px solid var(--border); border-radius:7px; padding:3px 7px;">
+      <span style="width:8px; height:8px; border-radius:50%; background:${WHEEL_COLORS[i % WHEEL_COLORS.length]};"></span>${fmt(r)} ت
+    </span>
+  `).join('');
+}
+function updateWheelStatusText(){
+  const btn = document.getElementById('wheel-btn');
+  if (wheelState.canSpin) {
+    btn.disabled = false; btn.style.opacity = 1;
+    document.getElementById('wheel-status').textContent = 'یه چرخش رایگان داری!';
+  } else {
+    btn.disabled = true; btn.style.opacity = .5;
+    const hours = Math.max(1, Math.ceil((wheelState.nextSpinAt - Date.now())/3600000));
+    document.getElementById('wheel-status').textContent = `دفعه بعد تا ${hours} ساعت دیگه می‌تونی بچرخونی`;
+  }
+}
 async function spinWheel(){
+  if (wheelSpinning || !wheelState?.canSpin) return;
+  wheelSpinning = true;
+  const btn = document.getElementById('wheel-btn');
+  btn.disabled = true;
+  haptic('medium');
   try {
-    haptic('medium');
     const { reward } = await api('/api/wheel/spin', { method:'POST' });
-    await refreshMe();
-    await renderGames();
-    haptic('heavy');
-    showToast(reward > 0 ? `🎉 بردی! ${fmt(reward)} تومان به کیف‌پولت اضافه شد` : '😅 این‌بار جایزه‌ای نگرفتی، فردا دوباره امتحان کن');
-  } catch (e) { showToast('❌ ' + e.message); }
+    const rewards = wheelState.rewards;
+    let idx = rewards.indexOf(reward);
+    if (idx === -1) idx = 0;
+    const n = rewards.length, seg = 360 / n;
+    const targetAngle = 360 * 6 + (360 - (idx * seg + seg/2)); // چند دور کامل + رسیدن دقیق به وسط قطعه
+    const disc = document.getElementById('wheel-disc');
+    disc.style.transform = `rotate(${targetAngle}deg)`;
+    setTimeout(async () => {
+      wheelSpinning = false;
+      await refreshMe();
+      await renderGames();
+      haptic('heavy');
+      showToast(reward > 0 ? `🎉 بردی! ${fmt(reward)} تومان به کیف‌پولت اضافه شد` : '😅 این‌بار جایزه‌ای نگرفتی، فردا دوباره امتحان کن');
+      wheelState.canSpin = false;
+      updateWheelStatusText();
+    }, 3300);
+  } catch (e) {
+    wheelSpinning = false;
+    btn.disabled = false;
+    showToast('❌ ' + e.message);
+  }
 }
 function openCommunityLink(type){
   const link = type === 'channel' ? state.config?.channel : state.config?.chat;
@@ -1585,30 +1656,44 @@ function switchCardGameTab(tab){
   document.getElementById('cg-tab-inventory').classList.toggle('active', tab==='inventory');
   document.getElementById('cg-tab-battle').classList.toggle('active', tab==='battle');
   document.getElementById('cg-tab-freecards').classList.toggle('active', tab==='freecards');
+  document.getElementById('cg-tab-history').classList.toggle('active', tab==='history');
   document.getElementById('cg-tab-board').classList.toggle('active', tab==='board');
   if (tab==='shop') renderCgShop();
   if (tab==='inventory') renderCgInventory();
   if (tab==='battle') renderCgBattle();
   if (tab==='freecards') renderCgFreeCards();
+  if (tab==='history') renderCgHistory();
   if (tab==='board') renderCgBoard();
 }
 
+function cardRarityStyle(power){
+  if (power >= 70) return { color:'var(--gold-1)', label:'افسانه‌ای', glow:'0 0 16px rgba(255,212,71,.35)' };
+  if (power >= 40) return { color:'#c084fc', label:'حماسی', glow:'0 0 14px rgba(192,132,252,.3)' };
+  if (power >= 20) return { color:'#7dd3fc', label:'کمیاب', glow:'0 0 12px rgba(125,211,252,.25)' };
+  return { color:'var(--text-2)', label:'معمولی', glow:'none' };
+}
+
+let cgSacrificeTargetId = null;
 async function renderCgInventory(){
   const wrap = document.getElementById('cg-content');
   wrap.innerHTML = `<div class="empty"><p>در حال بارگذاری…</p></div>`;
   try {
     const cards = await api('/api/game/my-cards');
-    wrap.innerHTML = cards.length ? `<div class="grid">${cards.map(c => `
-      <div class="pcard">
+    cgMyCards = cards;
+    wrap.innerHTML = cards.length ? `<div class="grid">${cards.map(c => {
+      const r = cardRarityStyle(c.effective_power);
+      return `
+      <div class="pcard" style="border-color:${r.color}44; box-shadow:${r.glow};">
         ${c.image_url ? `<img src="${c.image_url}" style="width:100%; height:74px; object-fit:cover; border-radius:10px;">` : `<div class="picon">🃏</div>`}
         <div class="pname">${c.name} <span style="color:var(--gold-1); font-size:10.5px;">Lv${c.level}</span></div>
-        <div class="pdesc">قدرت: ${c.effective_power}${c.level < c.max_level ? ` → ${c.effective_power + c.power_per_level} بعد ارتقا` : ' (حداکثر)'}</div>
+        <div class="pdesc" style="color:${r.color};">${r.label} — قدرت ${c.effective_power}</div>
         ${c.level < c.max_level ? `
-          <button class="addbtn" style="width:100%; margin-top:6px;" onclick="upgradeCard(${c.user_card_id})">
-            ⬆️ ارتقا — ${fmt(c.upgrade_cost * c.level)} ${c.upgrade_currency}
-          </button>` : `<div style="text-align:center; font-size:10px; color:var(--gold-1); margin-top:6px;">⭐ حداکثر سطح</div>`}
+          <button class="addbtn" style="width:100%; margin-top:5px;" onclick="upgradeCard(${c.user_card_id})">
+            ⬆️ ${fmt(c.upgrade_cost * c.level)} ${c.upgrade_currency}
+          </button>` : `<div style="text-align:center; font-size:10px; color:var(--gold-1); margin-top:5px;">⭐ حداکثر سطح</div>`}
+        <button class="addbtn" style="width:100%; margin-top:5px; background:var(--danger);" onclick="openSacrifice(${c.user_card_id})">🔥 ارتقا با قربانی</button>
       </div>
-    `).join('')}</div>` : `<div class="empty"><div class="e-icon">🎒</div><p>هنوز کارتی نداری — از فروشگاه بخر یا با تسک بگیر</p></div>`;
+    `;}).join('')}</div>` : `<div class="empty"><div class="e-icon">🎒</div><p>هنوز کارتی نداری — از فروشگاه بخر یا با تسک بگیر</p></div>`;
   } catch (e) { showToast('❌ ' + e.message); }
 }
 async function upgradeCard(userCardId){
@@ -1620,35 +1705,75 @@ async function upgradeCard(userCardId){
     showToast(`✅ کارت به سطح ${r.newLevel} ارتقا پیدا کرد`);
   } catch (e) { showToast('❌ ' + e.message); }
 }
+function openSacrifice(targetId){
+  cgSacrificeTargetId = targetId;
+  const others = cgMyCards.filter(c => c.user_card_id !== targetId);
+  const wrap = document.getElementById('sac-list');
+  wrap.innerHTML = others.length ? others.map(c => `
+    <div class="pay-option" onclick="confirmSacrifice(${c.user_card_id})">
+      <div class="pi">🃏</div>
+      <div class="pt"><div class="n">${c.name} (Lv${c.level})</div><div class="s">قدرت ${c.effective_power} → بونوس ${Math.floor(c.effective_power/2)}+</div></div>
+    </div>
+  `).join('') : `<div class="empty"><p>کارت دیگه‌ای برای قربانی کردن نداری</p></div>`;
+  openSheet('overlay-sacrifice');
+}
+async function confirmSacrifice(sacrificeId){
+  try {
+    const r = await api('/api/game/sacrifice-upgrade', { method:'POST', body: JSON.stringify({ targetUserCardId: cgSacrificeTargetId, sacrificeUserCardId: sacrificeId }) });
+    closeSheet('overlay-sacrifice');
+    await renderCgInventory();
+    haptic('heavy');
+    showToast(`🔥 قربانی شد! +${r.boost} قدرت اضافه شد`);
+  } catch (e) { showToast('❌ ' + e.message); }
+}
 
 async function renderCgFreeCards(){
   const wrap = document.getElementById('cg-content');
   wrap.innerHTML = `<div class="empty"><p>در حال بارگذاری…</p></div>`;
   try {
-    const tasks = (await api('/api/tasks')).filter(t => t.reward_card_id);
+    const tasks = await api('/api/card-tasks');
     wrap.innerHTML = tasks.length ? tasks.map(t=>`
       <div class="pcard" style="width:100%; flex-direction:row; align-items:center; gap:12px; margin-bottom:10px;">
-        <div class="picon">${t.type==='join_channel'?'📢':'🔗'}</div>
+        ${t.card_image ? `<img src="${t.card_image}" style="width:44px; height:44px; object-fit:cover; border-radius:9px; flex-shrink:0;">` : `<div class="picon">${t.type==='join_channel'?'📢':'🔗'}</div>`}
         <div style="flex:1;">
           <div class="pname">${t.title}</div>
-          <div class="pdesc">${t.description||''} — جایزه: 🃏 یک کارت رایگان</div>
+          <div class="pdesc">${t.description||''} — جایزه: 🃏 ${t.card_name} (قدرت ${t.card_power})</div>
         </div>
         ${t.done
           ? `<span style="background:rgba(51,217,152,.13); color:var(--success); padding:6px 12px; border-radius:999px; font-size:11px; font-weight:800;">گرفتی ✓</span>`
-          : `<button class="addbtn" style="width:auto; padding:0 14px; height:32px; border-radius:9px;" onclick="doTaskCard('${t.id}','${t.type}','${t.channel_username||''}','${t.link||''}')">بگیر</button>`}
+          : `<button class="addbtn" style="width:auto; padding:0 14px; height:32px; border-radius:9px;" onclick="doCardTask('${t.id}','${t.type}','${t.channel_username||''}','${t.link||''}')">بگیر</button>`}
       </div>
     `).join('') : `<div class="empty"><div class="e-icon">🎁</div><p>فعلاً تسک کارت‌داری فعال نیست</p></div>`;
   } catch (e) { showToast('❌ ' + e.message); }
 }
-async function doTaskCard(id, type, channel, link){
+async function doCardTask(id, type, channel, link){
   if (type === 'join_channel' && channel) window.open('https://t.me/' + channel, '_blank');
   if (type === 'link' && link) window.open(link, '_blank');
   try {
-    await api(`/api/tasks/${id}/claim`, { method:'POST' });
-    await refreshMe();
+    await api(`/api/card-tasks/${id}/claim`, { method:'POST' });
     await renderCgFreeCards();
     haptic('heavy');
     showToast('🎉 کارت رایگان دریافت شد');
+  } catch (e) { showToast('❌ ' + e.message); }
+}
+
+async function renderCgHistory(){
+  const wrap = document.getElementById('cg-content');
+  wrap.innerHTML = `<div class="empty"><p>در حال بارگذاری…</p></div>`;
+  try {
+    const rows = await api('/api/game/history');
+    wrap.innerHTML = rows.length ? rows.map(m => `
+      <div class="panel" style="padding:14px; margin-bottom:10px; border-color:${m.won?'rgba(51,217,152,.3)':'rgba(255,107,122,.3)'};">
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+          <div style="font-size:12.5px; font-weight:800; color:${m.won?'var(--success)':'var(--danger)'};">${m.won ? '🏆 برد' : '💔 باخت'} — مقابل ${m.opponentName}${m.opponentUsername?' @'+m.opponentUsername:''}</div>
+          <div style="font-size:10px; color:var(--text-2);">${m.created_at?.slice(0,16)}</div>
+        </div>
+        <div style="font-size:11px; color:var(--text-1); margin-bottom:8px;">قدرت تو: ${m.myPower} — قدرت حریف: ${m.oppPower}</div>
+        <div style="display:flex; gap:6px; flex-wrap:wrap;">
+          ${m.myCards.map(c=>`<span style="font-size:9.5px; background:var(--surface-2); border:1px solid var(--border); border-radius:7px; padding:3px 8px;">${c.name} (Lv${c.level})</span>`).join('')}
+        </div>
+      </div>
+    `).join('') : `<div class="empty"><div class="e-icon">📜</div><p>هنوز نبردی نداشتی</p></div>`;
   } catch (e) { showToast('❌ ' + e.message); }
 }
 
@@ -1657,17 +1782,19 @@ async function renderCgShop(){
   wrap.innerHTML = `<div class="empty"><p>در حال بارگذاری…</p></div>`;
   try {
     const cards = await api('/api/game/cards');
-    wrap.innerHTML = cards.length ? `<div class="grid">${cards.map(c => `
-      <div class="pcard">
+    wrap.innerHTML = cards.length ? `<div class="grid">${cards.map(c => {
+      const r = cardRarityStyle(c.power);
+      return `
+      <div class="pcard" style="border-color:${r.color}44; box-shadow:${r.glow};">
         ${c.image_url ? `<img src="${c.image_url}" style="width:100%; height:74px; object-fit:cover; border-radius:10px;">` : `<div class="picon">🃏</div>`}
         <div class="pname">${c.name}</div>
-        <div class="pdesc">قدرت: ${c.power} — ${c.description||''}</div>
+        <div class="pdesc" style="color:${r.color};">${r.label} — قدرت ${c.power}</div>
         <div class="prow">
           <div class="price">${fmt(c.price)}<small> ${c.currency_code}</small></div>
           <button class="addbtn" onclick="buyGameCard('${c.id}')">🛒</button>
         </div>
       </div>
-    `).join('')}</div>` : `<div class="empty"><div class="e-icon">🃏</div><p>فعلاً کارتی تو فروشگاه نیست</p></div>`;
+    `;}).join('')}</div>` : `<div class="empty"><div class="e-icon">🃏</div><p>فعلاً کارتی تو فروشگاه نیست</p></div>`;
   } catch (e) { showToast('❌ ' + e.message); }
 }
 async function buyGameCard(id){
@@ -1723,13 +1850,15 @@ async function renderCgBattle(){
     wrap.innerHTML = `
       <div style="font-size:10.5px; color:var(--text-2); margin-bottom:10px;">حداقل ${status.minDeckSize} کارت انتخاب کن — بازی باقی‌مونده امروز: ${status.playsRemaining}</div>
       <div class="grid" id="cg-deck-grid">
-        ${myCards.map(c => `
-          <div class="pcard" id="deckcard-${c.user_card_id}" onclick="toggleDeckCard(${c.user_card_id})" style="cursor:pointer;">
+        ${myCards.map(c => {
+          const r = cardRarityStyle(c.effective_power);
+          return `
+          <div class="pcard" id="deckcard-${c.user_card_id}" data-rarity="${r.color}" onclick="toggleDeckCard(${c.user_card_id})" style="cursor:pointer; border-color:${r.color}44;">
             ${c.image_url ? `<img src="${c.image_url}" style="width:100%; height:60px; object-fit:cover; border-radius:10px;">` : `<div class="picon">🃏</div>`}
-            <div class="pname" style="font-size:11.5px;">${c.name}</div>
-            <div class="pdesc">قدرت: ${c.power}</div>
+            <div class="pname" style="font-size:11.5px;">${c.name} <span style="color:var(--gold-1); font-size:9.5px;">Lv${c.level}</span></div>
+            <div class="pdesc" style="color:${r.color};">قدرت: ${c.effective_power}</div>
           </div>
-        `).join('')}
+        `;}).join('')}
       </div>
       <button class="btn-main" style="margin-top:16px;" onclick="startCgQueue(${status.minDeckSize})">شروع نبرد ⚔️</button>
     `;
@@ -1739,10 +1868,12 @@ function toggleDeckCard(userCardId){
   const el = document.getElementById(`deckcard-${userCardId}`);
   if (cgDeckSelection.has(userCardId)) {
     cgDeckSelection.delete(userCardId);
-    el.style.borderColor = 'var(--border)';
+    el.style.borderColor = (el.dataset.rarity || 'var(--border)') + '44';
+    el.style.boxShadow = 'none';
   } else {
     cgDeckSelection.add(userCardId);
     el.style.borderColor = 'var(--violet)';
+    el.style.boxShadow = '0 0 12px rgba(124,108,255,.35)';
   }
 }
 async function startCgQueue(minSize){
@@ -1783,18 +1914,37 @@ async function renderCgBoard(){
   const wrap = document.getElementById('cg-content');
   wrap.innerHTML = `<div class="empty"><p>در حال بارگذاری…</p></div>`;
   try {
-    const { rows, prizes } = await api('/api/game/leaderboard');
+    const { rows, prizes, reset } = await api('/api/game/leaderboard');
+    const remain = reset.nextReset - Date.now();
+    const days = Math.max(0, Math.floor(remain / 86400000));
+    const hours = Math.max(0, Math.floor((remain % 86400000) / 3600000));
+    const top3 = rows.slice(0, 3);
+    const rest = rows.slice(3);
+    const medal = ['🥇','🥈','🥉'];
     wrap.innerHTML = `
-      ${prizes.length ? `<div class="panel-note" style="font-size:10.5px; color:var(--text-2); margin-bottom:14px; line-height:2;">
+      <div class="panel" style="text-align:center; margin-bottom:14px;">
+        <div style="font-size:10.5px; color:var(--text-2);">تا ریست بعدی لیدربورد</div>
+        <div style="font-size:18px; font-weight:900; color:var(--gold-1); margin-top:4px;">${days} روز و ${hours} ساعت</div>
+      </div>
+      ${prizes.length ? `<div class="panel-note" style="font-size:10.5px; color:var(--text-2); margin-bottom:14px; line-height:2; background:var(--surface); border:1px solid var(--border); border-radius:12px; padding:12px;">
         ${prizes.map(p=>`🏆 رتبه ${p.rank_from} تا ${p.rank_to}: ${p.prize_text}`).join('<br>')}
       </div>` : ''}
-      ${rows.length ? rows.map((r,i) => `
+      ${top3.length ? `<div style="display:flex; gap:8px; margin-bottom:14px;">
+        ${top3.map((r,i)=>`
+          <div class="panel" style="flex:1; text-align:center; padding:14px 8px; ${i===0?'border-color:var(--gold-1); box-shadow:0 0 16px rgba(255,212,71,.2);':''}">
+            <div style="font-size:22px;">${medal[i]}</div>
+            <div style="font-size:11px; font-weight:800; margin-top:4px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${r.first_name||'کاربر'}</div>
+            <div style="font-size:10px; color:var(--gold-1); margin-top:2px;">${fmt(r.points)} امتیاز</div>
+          </div>
+        `).join('')}
+      </div>` : ''}
+      ${rest.length ? rest.map((r,i) => `
         <div class="tx-item">
-          <div class="tx-icon in">#${i+1}</div>
+          <div class="tx-icon in">#${i+4}</div>
           <div class="tx-mid"><div class="t1">${r.first_name||'کاربر'}${r.username?' @'+r.username:''}</div><div class="t2">${r.wins} برد / ${r.losses} باخت</div></div>
           <div class="tx-amt in">${fmt(r.points)} امتیاز</div>
         </div>
-      `).join('') : `<div class="empty"><div class="e-icon">🏆</div><p>هنوز کسی امتیاز نگرفته</p></div>`}
+      `).join('') : (!top3.length ? `<div class="empty"><div class="e-icon">🏆</div><p>هنوز کسی امتیاز نگرفته</p></div>` : '')}
     `;
   } catch (e) { showToast('❌ ' + e.message); }
 }
