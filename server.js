@@ -846,6 +846,15 @@ process.on('uncaughtException', (err) => {
 // انتهای فایل server.js
 
 const PORT = process.env.PORT || 8080; // Railway معمولاً از 8080 استفاده می‌کند
+// اضافه کردن یک مسیر برای چک کردن سلامت سرور توسط Railway
+app.get('/', (req, res) => {
+  res.status(200).send('OK - Starkadeh is running');
+});
+
+// مسیر تست سلامت اختصاصی (اگر در پنل Railway تنظیم کرده‌اید)
+app.get('/health', (req, res) => {
+  res.status(200).json({ status: 'up', timestamp: new Date() });
+});
 
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`🚀 Server is listening on port ${PORT}`);
