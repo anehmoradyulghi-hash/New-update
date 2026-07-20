@@ -843,10 +843,18 @@ process.on('uncaughtException', (err) => {
   console.error('[uncaughtException]', err);
 });
 
-app.listen(process.env.PORT || 3000, async () => {
-  console.log(`🚀 server running on port ${process.env.PORT || 3000}`);
-  if (process.env.PUBLIC_URL) {
-    const r = await setWebhook(`${process.env.PUBLIC_URL}/telegram-webhook`, process.env.WEBHOOK_SECRET);
-    console.log('webhook set:', r.ok);
-  }
+// ... کدهای قبلی ...
+
+const PORT = process.env.PORT || 3000;
+
+app.listen(PORT, () => {
+  console.log(`Server is running on port ${PORT}`);
+  
+  // قیمت‌ها را بعد از بالا آمدن سرور در پس‌زمینه بگیر، نه قبل از آن!
+  getLivePrices().then(() => {
+    console.log("Initial prices fetched.");
+  }).catch(err => {
+    console.log("Failed to fetch initial prices, using defaults.");
+  });
 });
+
