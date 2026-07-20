@@ -1,40 +1,45 @@
-// نمونه اتصال به درگاه زرین‌پال. اگر از درگاه دیگری (زیبال، آیدی‌پی و ...) استفاده می‌کنید،
-// فقط کافیست همین دو تابع (requestPayment و verifyPayment) را مطابق مستندات همان درگاه بازنویسی کنید.
+// gateway.js - سیستم پرداخت داخلی برای TON و USDT
 
-const MERCHANT_ID = process.env.ZARINPAL_MERCHANT_ID;
-const CALLBACK_URL = process.env.ZARINPAL_CALLBACK_URL;
+/**
+ * ایجاد یک تراکنش جدید در سیستم
+ * به جای فراخوانی API زرین‌پال، تراکنش را در وضعیت "در انتظار" (pending) ذخیره می‌کنیم.
+ */
+export async function requestPayment({ userId, amount, currency, description }) {
+    // در اینجا باید فراخوانی به db.js داشته باشید تا تراکنش را ثبت کنید
+    // فرض می‌کنیم تابع createPayment در db.js وجود دارد (یا باید اضافه شود)
+    
+    // شبیه‌سازی ایجاد تراکنش
+    const paymentId = `tx_${Date.now()}_${userId}`;
+    
+    // ثبت در دیتابیس (باید تابع مربوطه را در db.js بسازید)
+    // await db.run('INSERT INTO payments (id, userId, amount, currency, status, description) VALUES (?, ?, ?, ?, ?, ?)', 
+    //    [paymentId, userId, amount, currency, 'pending', description]);
 
-const REQUEST_URL = 'https://api.zarinpal.com/pg/v4/payment/request.json';
-const VERIFY_URL = 'https://api.zarinpal.com/pg/v4/payment/verify.json';
-const STARTPAY_URL = 'https://www.zarinpal.com/pg/StartPay/';
+    console.log(`[Payment] New intent created: ${paymentId} for user ${userId}`);
 
-// amountRial: مبلغ به تومان ضربدر ۱۰ می‌شود چون زرین‌پال با ریال کار می‌کند
-export async function requestPayment({ amountRial, description, mobile }) {
-  const res = await fetch(REQUEST_URL, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      merchant_id: MERCHANT_ID,
-      amount: amountRial * 10,
-      description,
-      callback_url: CALLBACK_URL,
-      metadata: mobile ? { mobile } : {},
-    }),
-  });
-  const data = await res.json();
-  if (data.data && data.data.code === 100) {
-    return { authority: data.data.authority, payUrl: STARTPAY_URL + data.data.authority };
-  }
-  throw new Error('zarinpal request failed: ' + JSON.stringify(data.errors));
+    // بازگرداندن اطلاعات برای نمایش به کاربر
+    return {
+        status: 'success',
+        paymentId: paymentId,
+        message: 'تراکنش ثبت شد. لطفا مبلغ را به آدرس کیف پول واریز کنید.'
+    };
 }
 
-export async function verifyPayment({ authority, amountRial }) {
-  const res = await fetch(VERIFY_URL, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ merchant_id: MERCHANT_ID, amount: amountRial * 10, authority }),
-  });
-  const data = await res.json();
-  const ok = data.data && (data.data.code === 100 || data.data.code === 101);
-  return { ok, refId: data.data?.ref_id };
+/**
+ * تایید پرداخت
+ * به جای استعلام از API زرین‌پال، وضعیت تراکنش را از دیتابیس چک می‌کنیم.
+ */
+export async function verifyPayment({ paymentId }) {
+    // در اینجا باید وضعیت پرداخت را از دیتابیس چک کنید
+    // const payment = await db.get('SELECT * FROM payments WHERE id = ?', [paymentId]);
+
+    // منطق تایید:
+    // اگر ادمین تایید کرده باشد یا سیستم خودکار تایید کرده باشد:
+    const isPaid = false; // اینجا باید وضعیت واقعی از دیتابیس خوانده شود
+
+    if (isPaid) {
+        return { status: 'success', message: 'پرداخت تایید شد.' };
+    } else {
+        return { status: 'pending', message: 'پرداخت هنوز تایید نشده است.' };
+    }
 }
