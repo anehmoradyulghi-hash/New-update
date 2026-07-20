@@ -24,7 +24,7 @@ import db, {
   getLeaderboardResetInfo, checkAndAutoResetLeaderboard,
   listActiveCardTasks, isCardTaskDone, completeCardTask,
 } from './db.js';
-import { getLivePrices, setManualPrices } from './prices.js';
+import { getLivePrices } from './prices.js';
 import adminRouter from './admin.js';
 
 const app = express();
@@ -70,7 +70,8 @@ const isAdmin = (id) => ADMIN_IDS.includes(Number(id));
 
 /* =========================================================================
    MIDDLEWARE: every /api/* call from the Mini App must carry a valid
-   Telegram initData string in the "X-Init-Data" header.
+   Telegram initData string in the "X-Init-Data" header. This is how we
+   know WHO is calling us without any separate login system.
    ========================================================================= */
 async function requireTelegramAuth(req, res, next) {
   try {
@@ -80,9 +81,10 @@ async function requireTelegramAuth(req, res, next) {
     if (!tgUser) return res.status(401).json({ error: 'invalid init data' });
 
     const params = new URLSearchParams(initData);
-    const startParam = params.get('start_param');
+    const startParam = params.get('start_param'); // carries ref_XXXXX if opened via referral link
     req.dbUser = getOrCreateUser(tgUser, startParam);
 
+    // جوین اجباری کانال (اگه تو Variables تنظیم شده باشه)
     if (process.env.REQUIRED_CHANNEL) {
       const joined = await isChannelMember(process.env.REQUIRED_CHANNEL, tgUser.id);
       if (!joined) {
@@ -118,6 +120,7 @@ app.get('/api/products', (req, res) => {
   res.json(rows);
 });
 
+// helper: validate a cart items array against the real DB prices (never trust client prices)
 function priceCart(items) {
   let total = 0;
   const resolved = [];
@@ -131,6 +134,7 @@ function priceCart(items) {
   return { total, resolved };
 }
 
+// checkout: pay with wallet balance (rial) — items: [{productId, qty}], note: آیدی گیرنده/اکانت مقصد
 app.post('/api/checkout/wallet', requireTelegramAuth, (req, res) => {
   const { items, note } = req.body;
   if (!Array.isArray(items) || !items.length) return res.status(400).json({ error: 'سبد خرید خالی است' });
@@ -152,6 +156,7 @@ app.post('/api/checkout/wallet', requireTelegramAuth, (req, res) => {
   res.json({ ok: true, total });
 });
 
+// checkout: pay with Telegram Stars -> returns an invoice link, Mini App opens it with Telegram.WebApp.openInvoice()
 app.post('/api/checkout/stars-invoice', requireTelegramAuth, async (req, res) => {
   const { items, note } = req.body;
   if (!Array.isArray(items) || !items.length) return res.status(400).json({ error: 'سبد خرید خالی است' });
@@ -160,8 +165,9 @@ app.post('/api/checkout/stars-invoice', requireTelegramAuth, async (req, res) =>
   try { ({ resolved } = priceCart(items)); }
   catch (e) { return res.status(404).json({ error: e.message }); }
 
-  const RIAL_PER_STAR = 385;
+  const RIAL_PER_STAR = 385; // نرخ تبدیل داخلی خودتان - قابل تنظیم
 
+  // هر کالا یک خط قیمت جدا در فاکتور استارز می‌شود؛ تلگرام خودش جمع می‌زند
   const prices = resolved.map(({ product, qty }) => ({
     label: `${product.name} ×${qty}`,
     amount: Math.ceil((product.price_rial * qty) / RIAL_PER_STAR),
@@ -181,8 +187,9 @@ app.post('/api/checkout/stars-invoice', requireTelegramAuth, async (req, res) =>
   res.json({ invoiceLink: link, totalStars: prices.reduce((s, p) => s + p.amount, 0) });
 });
 
+// checkout / topup: pay with rial payment gateway -> returns redirect URL
 app.post('/api/gateway/start', requireTelegramAuth, async (req, res) => {
-  const { purpose, amountRial, items, note } = req.body;
+  const { purpose, amountRial, items, note } = req.body; // purpose: "topup" | "order"
   let amount = amountRial;
   let purposeTag = 'topup';
 
@@ -208,16 +215,19 @@ app.post('/api/gateway/start', requireTelegramAuth, async (req, res) => {
   res.json({ payUrl });
 });
 
+// user's own transaction history (wallet page)
 app.get('/api/wallet/transactions', requireTelegramAuth, (req, res) => {
   const rows = db.prepare('SELECT * FROM transactions WHERE tg_id = ? ORDER BY created_at DESC LIMIT 40').all(req.dbUser.tg_id);
   res.json(rows);
 });
 
+// user's own order history (profile page)
 app.get('/api/orders', requireTelegramAuth, (req, res) => {
   const rows = db.prepare('SELECT * FROM orders WHERE tg_id = ? ORDER BY created_at DESC LIMIT 30').all(req.dbUser.tg_id);
   res.json(rows);
 });
 
+// referral stats + invited list for the current user
 app.get('/api/referral', requireTelegramAuth, (req, res) => {
   const invited = db.prepare('SELECT tg_id, username, first_name, created_at FROM users WHERE referred_by = ?').all(req.dbUser.tg_id);
   const totalEarned = db.prepare(`SELECT COALESCE(SUM(amount),0) s FROM transactions WHERE tg_id = ? AND reason LIKE 'پورسانت%'`).get(req.dbUser.tg_id).s;
@@ -230,18 +240,21 @@ app.get('/api/referral', requireTelegramAuth, (req, res) => {
 });
 
 /* =========================================================================
-   GIFT MARKET
+   GIFT MARKET — بازار گیفت کاربران (امانی، مثل پرتال)
    ========================================================================= */
-const GIFT_MARKET_FEE = Number(process.env.GIFT_MARKET_FEE_PERCENT || 5);
+const GIFT_MARKET_FEE = Number(process.env.GIFT_MARKET_FEE_PERCENT || 5); // درصد کارمزد پلتفرم
 
+// دسته‌بندی‌های بازار گیفت (از پنل ادمین مدیریت می‌شن)
 app.get('/api/gift-categories', (req, res) => {
   res.json(listGiftCategories());
 });
 
+// آگهی‌های خودم (چه فروشنده باشم چه خریدار)
 app.get('/api/gifts/my', requireTelegramAuth, (req, res) => {
   res.json(getMyListings(req.dbUser.tg_id));
 });
 
+// آگهی جدید — گیفت واقعی خودم رو برای فروش می‌ذارم
 app.post('/api/gifts/list', requireTelegramAuth, (req, res) => {
   const { title, image_url, category, price } = req.body;
   const p = Number(price);
@@ -255,10 +268,12 @@ app.post('/api/gifts/:id/cancel', requireTelegramAuth, (req, res) => {
   catch (e) { res.status(400).json({ error: e.message }); }
 });
 
+// بازار — همه آگهی‌های در دسترس بقیه کاربرا (با فیلتر دسته‌بندی اختیاری)
 app.get('/api/gifts/market', requireTelegramAuth, (req, res) => {
   res.json({ listings: getMarketListings(req.dbUser.tg_id, req.query.category), feePercent: GIFT_MARKET_FEE });
 });
 
+// خرید = رزرو + بلوکه شدن پول (امانت) — هنوز به فروشنده واریز نمی‌شه
 app.post('/api/gifts/:id/buy', requireTelegramAuth, (req, res) => {
   try {
     const g = reserveListing(req.dbUser.tg_id, req.params.id);
@@ -270,6 +285,7 @@ app.post('/api/gifts/:id/buy', requireTelegramAuth, (req, res) => {
   } catch (e) { res.status(400).json({ error: e.message }); }
 });
 
+// خریدار تایید می‌کنه گیفت واقعاً بهش رسیده -> پول امانت آزاد می‌شه به فروشنده
 app.post('/api/gifts/:id/confirm-received', requireTelegramAuth, (req, res) => {
   try {
     const result = confirmReceived(req.dbUser.tg_id, req.params.id, GIFT_MARKET_FEE);
@@ -279,9 +295,9 @@ app.post('/api/gifts/:id/confirm-received', requireTelegramAuth, (req, res) => {
 });
 
 /* =========================================================================
-   DAILY WHEEL
+   DAILY WHEEL — چرخ شانس رایگان روزانه (بدون شرط‌بندی، فقط جایزه رایگان)
    ========================================================================= */
-const WHEEL_REWARDS = [0, 2000, 5000, 5000, 10000, 20000, 50000];
+const WHEEL_REWARDS = [0, 2000, 5000, 5000, 10000, 20000, 50000]; // تومان — قابل تنظیم
 const WHEEL_COOLDOWN_MS = 24 * 60 * 60 * 1000;
 
 app.get('/api/wheel/status', requireTelegramAuth, (req, res) => {
@@ -302,10 +318,10 @@ app.post('/api/wheel/spin', requireTelegramAuth, (req, res) => {
 });
 
 /* =========================================================================
-   STAKING
+   STAKING — کاربر بخشی از موجودی ریالی رو قفل می‌کنه و APR سالانه می‌گیره
    ========================================================================= */
-const STAKE_APR = Number(process.env.STAKE_APR || 38);
-const STAKE_CAP_RIAL = Number(process.env.STAKE_CAP_RIAL || 50000000);
+const STAKE_APR = Number(process.env.STAKE_APR || 38);           // درصد سالانه
+const STAKE_CAP_RIAL = Number(process.env.STAKE_CAP_RIAL || 50000000); // سقف استیک هر کاربر
 
 app.get('/api/stake', requireTelegramAuth, (req, res) => {
   const user = getUser(req.dbUser.tg_id);
@@ -334,7 +350,7 @@ app.post('/api/stake/withdraw', requireTelegramAuth, (req, res) => {
 });
 
 /* =========================================================================
-   TASKS
+   TASKS — تسک‌های قابل مدیریت از پنل ادمین
    ========================================================================= */
 app.get('/api/tasks', requireTelegramAuth, (req, res) => {
   const tasks = listActiveTasks().map(t => ({ ...t, done: isTaskDone(req.dbUser.tg_id, t.id) }));
@@ -353,6 +369,7 @@ app.post('/api/tasks/:id/claim', requireTelegramAuth, async (req, res) => {
   res.json({ ok: true });
 });
 
+// شارژ کیف‌پول با کارت‌به‌کارت — نیاز به تایید دستی ادمین داره
 app.post('/api/wallet/card-topup', requireTelegramAuth, async (req, res) => {
   const amount = Number(req.body.amount);
   const trackingCode = String(req.body.trackingCode || '').trim();
@@ -374,52 +391,28 @@ app.post('/api/wallet/card-topup', requireTelegramAuth, async (req, res) => {
 });
 
 /* =========================================================================
-   MULTI-CURRENCY WALLET — قیمت دستی (بدون وابستگی به نوبیتکس)
+   MULTI-CURRENCY WALLET — تتر و تون (گرام) — قیمت لحظه‌ای از نوبیتکس
+   واریز/برداشت با تایید دستی ادمین، تبدیل آنی بین ریال/تتر/تون خودکاره
    ========================================================================= */
 app.get('/api/currencies', (req, res) => {
   res.json(listCurrencies());
 });
-
 app.get('/api/prices', async (req, res) => {
   res.json(await getLivePrices());
 });
-
-// مسیرهای جدید جهت تغییر دستی قیمت‌ها از پنل ادمین
-app.get('/api/admin/prices', async (req, res) => {
-  try {
-    const prices = await getLivePrices();
-    res.json({ success: true, prices });
-  } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
-  }
-});
-
-app.post('/api/admin/prices', async (req, res) => {
-  try {
-    const { ton, usdt } = req.body;
-    if (!ton && !usdt) {
-      return res.status(400).json({ success: false, error: 'قیمت TON یا USDT وارد نشده است.' });
-    }
-    const newPrices = await setManualPrices(ton, usdt);
-    res.json({ success: true, message: 'قیمت‌ها با موفقیت بروزرسانی شدند.', prices: newPrices });
-  } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
-  }
-});
-
 app.get('/api/wallet/balances', requireTelegramAuth, (req, res) => {
   res.json(getUserBalances(req.dbUser.tg_id));
 });
 
 const SWAP_FEE_PERCENT = Number(process.env.SWAP_FEE_PERCENT || 1);
 app.post('/api/wallet/swap', requireTelegramAuth, async (req, res) => {
-  const { from, to, amount } = req.body;
+  const { from, to, amount } = req.body; // from/to: 'RIAL' | 'USDT' | 'TON'
   const amt = Number(amount);
   if (!amt || amt <= 0) return res.status(400).json({ error: 'مقدار نامعتبر است' });
   if (from === to) return res.status(400).json({ error: 'مبدا و مقصد نمی‌تونن یکی باشن' });
   if (![from, to].includes('RIAL')) return res.status(400).json({ error: 'تبدیل فقط بین ریال و ارز دیگه‌س' });
 
-  const prices = await getLivePrices();
+  const prices = await getLivePrices(); // تومان به‌ازای هر واحد
   const crypto = from === 'RIAL' ? to : from;
   const unitPrice = crypto === 'USDT' ? prices.usdt : prices.ton;
   if (!unitPrice) return res.status(503).json({ error: 'قیمت لحظه‌ای در دسترس نیست، چند لحظه دیگه امتحان کن' });
@@ -475,7 +468,7 @@ app.post('/api/wallet/currency-withdraw', requireTelegramAuth, (req, res) => {
   const balance = getCurrencyBalance(req.dbUser.tg_id, code);
   if (balance < amt) return res.status(400).json({ error: 'موجودی کافی نیست' });
 
-  adjustCurrencyBalance(req.dbUser.tg_id, code, -amt);
+  adjustCurrencyBalance(req.dbUser.tg_id, code, -amt); // بلوکه فوری تا رسیدگی ادمین
   const id = createCurrencyRequest(req.dbUser.tg_id, code, 'withdraw', amt, address, null);
   const adminIdsList = (process.env.ADMIN_IDS || '').split(',').map(s => s.trim()).filter(Boolean);
   const text = `📤 درخواست برداشت ${code}\nکاربر: ${req.dbUser.first_name || ''} (${req.dbUser.tg_id})\nمقدار: ${amt} ${code}\nآدرس مقصد: ${address}`;
@@ -490,6 +483,7 @@ app.post('/api/wallet/currency-withdraw', requireTelegramAuth, (req, res) => {
   res.json({ ok: true });
 });
 
+// برداشت ریالی (کارت‌به‌کارت دستی) — کنار شارژ کیف‌پول
 app.post('/api/wallet/rial-withdraw', requireTelegramAuth, (req, res) => {
   const amount = Number(req.body.amount);
   const cardNumber = String(req.body.cardNumber || '').trim();
@@ -514,7 +508,7 @@ app.post('/api/wallet/rial-withdraw', requireTelegramAuth, (req, res) => {
 });
 
 /* =========================================================================
-   CARD GAME
+   CARD GAME — فروشگاه کارت، مچ‌سازی ۱به۱، لیدربورد
    ========================================================================= */
 const GAME_DAILY_LIMIT = Number(process.env.GAME_DAILY_LIMIT || 5);
 const GAME_MIN_DECK_SIZE = Number(process.env.GAME_MIN_DECK_SIZE || 5);
@@ -591,7 +585,7 @@ app.get('/api/game/leaderboard', (req, res) => {
 });
 
 /* =========================================================================
-   CARD TASKS
+   CARD TASKS — تسک‌های اختصاصی گرفتن کارت رایگان (مجزا از تسک‌های عمومی ربات)
    ========================================================================= */
 app.get('/api/card-tasks', requireTelegramAuth, (req, res) => {
   const tasks = listActiveCardTasks().map(t => ({ ...t, done: isCardTaskDone(req.dbUser.tg_id, t.id) }));
@@ -609,6 +603,7 @@ app.post('/api/card-tasks/:id/claim', requireTelegramAuth, async (req, res) => {
   res.json({ ok: true });
 });
 
+// gateway calls this URL back after the user finishes paying (set as ZARINPAL_CALLBACK_URL)
 app.get('/gateway/verify', async (req, res) => {
   const { Authority, Status } = req.query;
   const record = db.prepare('SELECT * FROM gateway_payments WHERE authority = ?').get(Authority);
@@ -644,19 +639,21 @@ app.get('/gateway/verify', async (req, res) => {
 });
 
 /* =========================================================================
-   TELEGRAM WEBHOOK
+   TELEGRAM WEBHOOK — receives all bot updates (messages + payments)
    ========================================================================= */
 app.post('/telegram-webhook', async (req, res) => {
+  // امنیت: تلگرام هدر secret token شما را در هر درخواست برمی‌گرداند
   if (req.headers['x-telegram-bot-api-secret-token'] !== process.env.WEBHOOK_SECRET) {
     return res.sendStatus(401);
   }
-  res.sendStatus(200);
+  res.sendStatus(200); // پاسخ فوری به تلگرام؛ پردازش را بعد از آن انجام می‌دهیم
 
   const update = req.body;
 
+  // 1) کاربر ربات را استارت کرده -> پیام خوش‌آمد + دکمه باز کردن مینی‌اپ
   if (update.message?.text?.startsWith('/start')) {
     const chatId = update.message.chat.id;
-    const refParam = update.message.text.split(' ')[1];
+    const refParam = update.message.text.split(' ')[1]; // مثلاً ref_123456 — دیگه پیشوند رو حذف نمی‌کنیم چون دقیقاً با ref_code دیتابیس باید یکی باشه
     getOrCreateUser(update.message.from, refParam);
 
     if (process.env.REQUIRED_CHANNEL) {
@@ -680,6 +677,7 @@ app.post('/telegram-webhook', async (req, res) => {
     return;
   }
 
+  // 1b) دکمه «عضو شدم، بررسی کن»
   if (update.callback_query?.data === 'check_join') {
     answerCallbackQuery(update.callback_query.id).catch(() => {});
     const chatId = update.callback_query.message.chat.id;
@@ -694,6 +692,7 @@ app.post('/telegram-webhook', async (req, res) => {
     return;
   }
 
+  // 1c) ادمین دکمه تایید/رد کارت‌به‌کارت رو زده
   if (update.callback_query?.data?.startsWith('approve_pay:') || update.callback_query?.data?.startsWith('reject_pay:')) {
     const cq = update.callback_query;
     answerCallbackQuery(cq.id).catch(() => {});
@@ -718,6 +717,7 @@ app.post('/telegram-webhook', async (req, res) => {
     return;
   }
 
+  // 1d) ادمین دکمه تایید/رد واریز ارزی (TON/USDT/...) رو زده
   if (update.callback_query?.data?.startsWith('approve_cdep:') || update.callback_query?.data?.startsWith('reject_cdep:')) {
     const cq = update.callback_query;
     answerCallbackQuery(cq.id).catch(() => {});
@@ -742,6 +742,7 @@ app.post('/telegram-webhook', async (req, res) => {
     return;
   }
 
+  // 1e) ادمین دکمه تایید/رد برداشت ارزی رو زده
   if (update.callback_query?.data?.startsWith('approve_cwd:') || update.callback_query?.data?.startsWith('reject_cwd:')) {
     const cq = update.callback_query;
     answerCallbackQuery(cq.id).catch(() => {});
@@ -754,7 +755,7 @@ app.post('/telegram-webhook', async (req, res) => {
       return;
     }
     if (action === 'approve_cwd') {
-      setCurrencyRequestStatus(reqRow.id, 'approved');
+      setCurrencyRequestStatus(reqRow.id, 'approved'); // موجودی از قبل موقع درخواست کسر شده بود
       const label = reqRow.currency_code === 'RIAL' ? `${reqRow.amount.toLocaleString()} تومان` : `${reqRow.amount} ${reqRow.currency_code}`;
       await sendMessage(cq.message.chat.id, `✅ ثبت شد. یادت نره ${label} رو دستی به مقصد زیر بفرستی:\n${reqRow.address}`);
       await sendMessage(reqRow.tg_id, `✅ برداشت ${label} انجام و ارسال شد.`);
@@ -763,7 +764,7 @@ app.post('/telegram-webhook', async (req, res) => {
       if (reqRow.currency_code === 'RIAL') {
         adjustBalance(reqRow.tg_id, 'rial', reqRow.amount, 'بازگشت وجه برداشت ردشده');
       } else {
-        adjustCurrencyBalance(reqRow.tg_id, reqRow.currency_code, reqRow.amount);
+        adjustCurrencyBalance(reqRow.tg_id, reqRow.currency_code, reqRow.amount); // برگشت وجه بلوکه‌شده
       }
       const label = reqRow.currency_code === 'RIAL' ? 'ریالی' : reqRow.currency_code;
       await sendMessage(cq.message.chat.id, `↩️ درخواست رد شد و موجودی برگشت.`);
@@ -772,6 +773,7 @@ app.post('/telegram-webhook', async (req, res) => {
     return;
   }
 
+  // 2) دستورات مدیریتی ادمین در چت با ربات
   if (update.message?.text && isAdmin(update.message.from.id)) {
     const [cmd, ...args] = update.message.text.trim().split(' ');
     const chatId = update.message.chat.id;
@@ -791,11 +793,13 @@ app.post('/telegram-webhook', async (req, res) => {
     }
   }
 
+  // 3) پیش از پرداخت استارز -> باید طی ۱۰ ثانیه تایید شود
   if (update.pre_checkout_query) {
     await answerPreCheckoutQuery(update.pre_checkout_query.id, true);
     return;
   }
 
+  // 4) پرداخت استارز با موفقیت انجام شد -> تحویل کالا / شارژ موجودی
   if (update.message?.successful_payment) {
     const sp = update.message.successful_payment;
     const payload = JSON.parse(sp.invoice_payload);
@@ -818,18 +822,20 @@ app.post('/telegram-webhook', async (req, res) => {
 });
 
 /* =========================================================================
-   SERVE THE MINI APP FRONTEND
+   SERVE THE MINI APP FRONTEND (the HTML file from earlier)
    ========================================================================= */
-app.use('/miniapp', express.static('public'));
-app.use('/admin/api', adminRouter);
-app.use('/admin', express.static('admin-panel'));
+app.use('/miniapp', express.static('public')); // put starkadeh-miniapp.html as public/index.html
+app.use('/admin/api', adminRouter);            // admin panel API (password protected, see admin.js)
+app.use('/admin', express.static('admin-panel')); // admin panel frontend (admin-panel/index.html)
 
+// اگه هر مسیری خطای پیش‌بینی‌نشده بده، به‌جای هنگ‌کردن، جواب واضح برمی‌گردونه
 app.use((err, req, res, next) => {
   console.error('[unhandled route error]', err);
   if (res.headersSent) return next(err);
   res.status(500).json({ error: 'خطای داخلی سرور' });
 });
 
+// اگه یه Promise ناخواسته reject بشه (مثلاً یه await بدون try/catch)، کل سرور کرش نکنه
 process.on('unhandledRejection', (reason) => {
   console.error('[unhandledRejection]', reason);
 });
