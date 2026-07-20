@@ -22,6 +22,9 @@ async function call(method, payload) {
 export const sendMessage = (chatId, text, extra = {}) =>
   call('sendMessage', { chat_id: chatId, text, parse_mode: 'HTML', ...extra });
 
+export const sendPhoto = (chatId, photoUrl, caption, extra = {}) =>
+  call('sendPhoto', { chat_id: chatId, photo: photoUrl, caption, parse_mode: 'HTML', ...extra });
+
 export const answerPreCheckoutQuery = (id, ok, error_message) =>
   call('answerPreCheckoutQuery', { pre_checkout_query_id: id, ok, ...(error_message ? { error_message } : {}) });
 
