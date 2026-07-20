@@ -12,9 +12,13 @@ import db, {
   getLeaderboard, listLeaderboardPrizes, addLeaderboardPrize, deleteLeaderboardPrize,
   getLeaderboardResetInfo, resetLeaderboard, setLeaderboardResetInterval,
   listAllCardTasksForAdmin, addCardTask, updateCardTask, deleteCardTask,
+  getGameConfig, setGameConfig,
+  banUser, unbanUser,
+  getAllTicketsForAdmin, getTicket, getTicketMessages, addSupportMessage, closeTicket,
+  getAllUserIds,
 } from './db.js';
 import { getLivePrices } from './prices.js';
-import { sendMessage } from './telegram.js';
+import { sendMessage, sendPhoto } from './telegram.js';
 
 const router = express.Router();
 const GIFT_MARKET_FEE = Number(process.env.GIFT_MARKET_FEE_PERCENT || 5);
@@ -304,20 +308,41 @@ router.get('/game-cards', (req, res) => {
   res.json(listGameCards(false));
 });
 router.post('/game-cards', (req, res) => {
-  const { id, name, image_url, power, description, currency_code, price, upgrade_cost, upgrade_currency, max_level, power_per_level } = req.body;
+  const { id, name, image_url, power, description, currency_code, price, upgrade_cost, upgrade_currency, max_level, power_per_level, purchase_limit, sacrifice_bonus_percent } = req.body;
   if (!id || !name || !currency_code) return res.status(400).json({ error: 'شناسه، نام و ارز الزامیه' });
+  const cfg = getGameConfig();
+  const p = Number(power) || 10;
+  if (p < cfg.minCardPower || p > cfg.maxCardPower) {
+    return res.status(400).json({ error: `قدرت باید بین ${cfg.minCardPower} تا ${cfg.maxCardPower} باشه` });
+  }
   try {
-    addGameCard(id, name, image_url, Number(power) || 10, description, currency_code, Number(price) || 0,
-      Number(upgrade_cost) || 0, upgrade_currency || 'RIAL', Number(max_level) || 5, Number(power_per_level) || 5);
+    addGameCard(id, name, image_url, p, description, currency_code, Number(price) || 0,
+      Number(upgrade_cost) || 0, upgrade_currency || 'RIAL', Number(max_level) || 5, Number(power_per_level) || 5,
+      purchase_limit ? Number(purchase_limit) : null, Number(sacrifice_bonus_percent) || 50);
     res.json({ ok: true });
   } catch (e) { res.status(400).json({ error: 'این شناسه قبلاً استفاده شده' }); }
 });
 router.patch('/game-cards/:id', (req, res) => {
+  if (req.body.power !== undefined) {
+    const cfg = getGameConfig();
+    const p = Number(req.body.power);
+    if (p < cfg.minCardPower || p > cfg.maxCardPower) {
+      return res.status(400).json({ error: `قدرت باید بین ${cfg.minCardPower} تا ${cfg.maxCardPower} باشه` });
+    }
+  }
   try { updateGameCard(req.params.id, req.body); res.json({ ok: true }); }
   catch (e) { res.status(400).json({ error: e.message }); }
 });
 router.delete('/game-cards/:id', (req, res) => {
   deleteGameCard(req.params.id);
+  res.json({ ok: true });
+});
+
+router.get('/game-config', (req, res) => {
+  res.json(getGameConfig());
+});
+router.post('/game-config', (req, res) => {
+  setGameConfig(req.body);
   res.json({ ok: true });
 });
 
@@ -372,6 +397,77 @@ router.patch('/card-tasks/:id', (req, res) => {
 router.delete('/card-tasks/:id', (req, res) => {
   deleteCardTask(req.params.id);
   res.json({ ok: true });
+});
+
+/* =========================================================================
+   BAN / RESTRICT USERS
+   ========================================================================= */
+router.post('/users/:tgId/ban', (req, res) => {
+  const tgId = Number(req.params.tgId);
+  const reason = req.body.reason || 'بدون دلیل مشخص';
+  banUser(tgId, reason);
+  sendMessage(tgId, `⛔ دسترسی شما به ربات محدود شد.\nدلیل: ${reason}`).catch(() => {});
+  res.json({ ok: true });
+});
+router.post('/users/:tgId/unban', (req, res) => {
+  const tgId = Number(req.params.tgId);
+  unbanUser(tgId);
+  sendMessage(tgId, `✅ محدودیت دسترسی شما برداشته شد، می‌تونی دوباره از ربات استفاده کنی.`).catch(() => {});
+  res.json({ ok: true });
+});
+
+/* =========================================================================
+   SUPPORT TICKETS
+   ========================================================================= */
+router.get('/tickets', (req, res) => {
+  res.json(getAllTicketsForAdmin());
+});
+router.get('/tickets/:id', (req, res) => {
+  const ticket = getTicket(req.params.id);
+  if (!ticket) return res.status(404).json({ error: 'not found' });
+  res.json({ ticket, messages: getTicketMessages(ticket.id) });
+});
+router.post('/tickets/:id/reply', upload.single('image'), (req, res) => {
+  const ticket = getTicket(req.params.id);
+  if (!ticket) return res.status(404).json({ error: 'not found' });
+  const text = req.body.text || '';
+  const imageUrl = req.file ? `/uploads/${req.file.filename}` : null;
+  addSupportMessage(ticket.id, 'admin', text, imageUrl);
+
+  if (imageUrl) {
+    sendMessage(ticket.tg_id, text || '📎 عکس از پشتیبانی').catch(() => {});
+  } else {
+    sendMessage(ticket.tg_id, `💬 پاسخ پشتیبانی:\n${text}`).catch(() => {});
+  }
+  res.json({ ok: true });
+});
+router.post('/tickets/:id/close', (req, res) => {
+  closeTicket(req.params.id);
+  res.json({ ok: true });
+});
+
+/* =========================================================================
+   BROADCAST — پیام همگانی به همه‌ی کاربران
+   ========================================================================= */
+router.post('/broadcast', upload.single('image'), async (req, res) => {
+  const text = req.body.text || '';
+  if (!text.trim()) return res.status(400).json({ error: 'متن پیام رو وارد کن' });
+  const ids = getAllUserIds();
+  const imageUrl = req.file ? `${process.env.PUBLIC_URL}/uploads/${req.file.filename}` : null;
+  res.json({ ok: true, total: ids.length }); // فوری جواب بده، ارسال در پس‌زمینه انجام می‌شه
+
+  (async () => {
+    for (const tgId of ids) {
+      try {
+        if (imageUrl) {
+          await sendPhoto(tgId, imageUrl, text);
+        } else {
+          await sendMessage(tgId, text);
+        }
+      } catch (e) {}
+      await new Promise(r => setTimeout(r, 40)); // جلوگیری از محدودیت نرخ تلگرام
+    }
+  })();
 });
 
 export default router;
