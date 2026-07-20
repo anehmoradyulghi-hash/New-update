@@ -843,8 +843,8 @@ process.on('uncaughtException', (err) => {
   console.error('[uncaughtException]', err);
 });
 
-app.listen(process.env.PORT || 8080, async () => {
-  console.log(`🚀 server running on port ${process.env.PORT || 8080}`);
+app.listen(process.env.PORT || 3000, async () => {
+  console.log(`🚀 server running on port ${process.env.PORT || 3000}`);
   if (process.env.PUBLIC_URL) {
     const r = await setWebhook(`${process.env.PUBLIC_URL}/telegram-webhook`, process.env.WEBHOOK_SECRET);
     console.log('webhook set:', r.ok);
