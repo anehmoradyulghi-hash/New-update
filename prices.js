@@ -1,49 +1,30 @@
-const db = require('./db');
+// قیمت لحظه‌ای تتر و تون از نوبیتکس — با کش کوتاه‌مدت تا فشار زیادی به API نوبیتکس وارد نشه
+const CACHE_MS = 30 * 1000; // نیم دقیقه
+let cache = { usdt: null, ton: null, updatedAt: 0 };
 
-// قیمت‌های پیش‌فرض
-let cachedPrices = {
-  ton: 300000,   // قیمت تومانی تون‌کوین
-  usdt: 60000,   // قیمت تومانی تتر
-  updatedAt: new Date().toISOString()
-};
-
-// بارگذاری اولیه قیمت‌ها از دیتابیس در صورت وجود
-async function initPrices() {
+async function fetchNobitexPrice(symbol) {
   try {
-    const storedTon = await db.getSetting('price_ton');
-    const storedUsdt = await db.getSetting('price_usdt');
-    if (storedTon) cachedPrices.ton = parseFloat(storedTon);
-    if (storedUsdt) cachedPrices.usdt = parseFloat(storedUsdt);
-  } catch (err) {
-    console.error('Error loading initial prices from DB:', err.message);
+    const res = await fetch(`https://api.nobitex.ir/market/stats?srcCurrency=${symbol}&dstCurrency=rls`);
+    const data = await res.json();
+    const key = `${symbol}-rls`;
+    const rialPrice = Number(data?.stats?.[key]?.latest);
+    if (!rialPrice) return null;
+    return Math.floor(rialPrice / 10); // نوبیتکس قیمت رو به ریال می‌ده، ما با تومان کار می‌کنیم
+  } catch (e) {
+    console.error('[nobitex]', symbol, e.message);
+    return null;
   }
 }
 
-initPrices();
-
-// دریافت قیمت‌های فعلی
-async function getPrices() {
-  return {
-    ton: cachedPrices.ton,
-    usdt: cachedPrices.usdt
-  };
-}
-
-// ثبت قیمت‌های جدید دستی
-async function setManualPrices(tonPrice, usdtPrice) {
-  if (tonPrice && !isNaN(tonPrice)) {
-    cachedPrices.ton = parseFloat(tonPrice);
-    await db.setSetting('price_ton', tonPrice.toString());
+// همیشه یه قیمت برمی‌گردونه (حتی اگه API لحظه‌ای در دسترس نبود، آخرین قیمت معتبر رو نگه می‌داره)
+export async function getLivePrices() {
+  const now = Date.now();
+  if (now - cache.updatedAt < CACHE_MS && cache.usdt && cache.ton) {
+    return { usdt: cache.usdt, ton: cache.ton, updatedAt: cache.updatedAt, live: false };
   }
-  if (usdtPrice && !isNaN(usdtPrice)) {
-    cachedPrices.usdt = parseFloat(usdtPrice);
-    await db.setSetting('price_usdt', usdtPrice.toString());
-  }
-  cachedPrices.updatedAt = new Date().toISOString();
-  return cachedPrices;
+  const [usdt, ton] = await Promise.all([fetchNobitexPrice('usdt'), fetchNobitexPrice('ton')]);
+  if (usdt) cache.usdt = usdt;
+  if (ton) cache.ton = ton;
+  cache.updatedAt = now;
+  return { usdt: cache.usdt, ton: cache.ton, updatedAt: cache.updatedAt, live: !!(usdt && ton) };
 }
-
-module.exports = {
-  getPrices,
-  setManualPrices
-};
