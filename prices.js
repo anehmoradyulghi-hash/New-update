@@ -1,90 +1,83 @@
-// قیمت لحظه‌ای تتر و تون از نوبیتکس — با کش کوتاه‌مدت
-const CACHE_MS = 30 * 1000; // 30 ثانیه
-const REQUEST_TIMEOUT_MS = 2500; // حداکثر زمان انتظار هر درخواست
+// prices.js
 
-let cache = {
-  usdt: null,
-  ton: null,
-  updatedAt: 0
-};
+const CACHE_MS = 30 * 1000; // 30 ثانیه کش
+const REQUEST_TIMEOUT = 4000; // 4 ثانیه مهلت پاسخگویی
 
-async function fetchWithTimeout(url, timeout = REQUEST_TIMEOUT_MS) {
+let cache = { usdt: null, ton: null, updatedAt: 0 };
+
+/**
+ * تابع کمکی برای ایجاد وقفه در صورت طولانی شدن ریکوئست
+ */
+async function fetchWithTimeout(url) {
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeout);
-
+  const id = setTimeout(() => controller.abort(), REQUEST_TIMEOUT);
   try {
-    const res = await fetch(url, {
-      method: 'GET',
-      signal: controller.signal,
-      headers: {
-        'Accept': 'application/json'
-      }
-    });
-
-    if (!res.ok) {
-      throw new Error(`HTTP ${res.status}`);
-    }
-
-    return await res.json();
-  } finally {
-    clearTimeout(timer);
+    const response = await fetch(url, { signal: controller.signal });
+    clearTimeout(id);
+    return response;
+  } catch (e) {
+    clearTimeout(id);
+    throw e;
   }
 }
 
 async function fetchNobitexPrice(symbol) {
   try {
-    // API نوبیتکس قیمت را به ریال برمی‌گرداند
+    // اصلاح API نوبیتکس (استفاده از مارکت تومانی مستقیم اگر موجود باشد یا تبدیل ریال)
+    // نوبیتکس برای تتر و تون جفت ارز rls (ریال) دارد
     const url = `https://api.nobitex.ir/market/stats?srcCurrency=${symbol}&dstCurrency=rls`;
-    const data = await fetchWithTimeout(url);
-
+    
+    const res = await fetchWithTimeout(url);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    
+    const data = await res.json();
     const key = `${symbol}-rls`;
     const rialPrice = Number(data?.stats?.[key]?.latest);
 
-    if (!rialPrice || Number.isNaN(rialPrice)) {
-      return null;
-    }
+    if (!rialPrice || isNaN(rialPrice)) return null;
 
-    // تبدیل ریال به تومان
-    return Math.floor(rialPrice / 10);
+    return Math.floor(rialPrice / 10); // تبدیل ریال به تومان
   } catch (e) {
-    console.error(`[nobitex] ${symbol}:`, e.message);
-    return null;
+    console.error(`[nobitex] ${symbol} fetch failed:`, e.message);
+    return null; // در صورت خطا، مقدار null برمی‌گرداند تا ربات منتظر نماند
   }
 }
 
-// همیشه سریع برمی‌گردد و اگر قیمت در دسترس نبود null می‌دهد
+/**
+ * تابع اصلی برای گرفتن قیمت‌ها
+ */
 export async function getLivePrices() {
   const now = Date.now();
 
-  // اگر کش هنوز معتبر بود، همان را بده
-  if (now - cache.updatedAt < CACHE_MS) {
-    return {
-      usdt: cache.usdt,
-      ton: cache.ton,
-      updatedAt: cache.updatedAt,
-      live: false
-    };
+  // اگر کش معتبر است، همان را برگردان
+  if (now - cache.updatedAt < CACHE_MS && cache.usdt !== null) {
+    return { ...cache, live: false };
   }
 
-  // هر درخواست مستقل است؛ اگر یکی fail شد، کل تابع fail نمی‌شود
-  const [usdtResult, tonResult] = await Promise.allSettled([
-    fetchNobitexPrice('usdt'),
-    fetchNobitexPrice('ton')
-  ]);
+  // تلاش برای گرفتن قیمت‌های جدید بدون اینکه کل برنامه منتظر بماند
+  try {
+    // استفاده از Promise.allSettled تا اگر یکی خطا داد، دومی متوقف نشود
+    const results = await Promise.allSettled([
+      fetchNobitexPrice('usdt'),
+      fetchNobitexPrice('ton')
+    ]);
 
-  const usdt = usdtResult.status === 'fulfilled' ? usdtResult.value : null;
-  const ton = tonResult.status === 'fulfilled' ? tonResult.value : null;
+    const usdt = results[0].status === 'fulfilled' ? results[0].value : null;
+    const ton = results[1].status === 'fulfilled' ? results[1].value : null;
 
-  // فقط مقادیر معتبر را در کش نگه دار
-  if (usdt !== null) cache.usdt = usdt;
-  if (ton !== null) cache.ton = ton;
+    // فقط اگر قیمت جدید آمد، کش را آپدیت کن
+    if (usdt) cache.usdt = usdt;
+    if (ton) cache.ton = ton;
+    cache.updatedAt = now;
 
-  cache.updatedAt = now;
-
-  return {
-    usdt: usdt ?? null,
-    ton: ton ?? null,
-    updatedAt: cache.updatedAt,
-    live: usdt !== null || ton !== null
-  };
+    return {
+      usdt: usdt || cache.usdt, // اگر جدید نیومد، آخرین قیمت کش شده رو بده
+      ton: ton || cache.ton,
+      updatedAt: cache.updatedAt,
+      live: !!(usdt || ton)
+    };
+  } catch (err) {
+    console.error('[prices] Critical error in getLivePrices:', err.message);
+    return { ...cache, live: false };
+  }
 }
