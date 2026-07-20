@@ -21,8 +21,11 @@ import db, {
   listGameCards, getGameCard, buyGameCard, getUserCards, upgradeUserCard, sacrificeUpgradeCard,
   getPlaysRemaining, addExtraPlays, joinQueue, getQueueStatus, cancelQueue,
   getLeaderboard, getMyRank, listLeaderboardPrizes, getMatchHistory,
-  getLeaderboardResetInfo, checkAndAutoResetLeaderboard,
+  getLeaderboardResetInfo, checkAndAutoResetLeaderboard, getGameConfig,
   listActiveCardTasks, isCardTaskDone, completeCardTask,
+  isBanned,
+  getOrCreateOpenTicket, addSupportMessage, getTicketMessages, getMyTickets,
+  getAllUserIds,
 } from './db.js';
 import { getLivePrices } from './prices.js';
 import adminRouter from './admin.js';
@@ -84,6 +87,11 @@ async function requireTelegramAuth(req, res, next) {
     const startParam = params.get('start_param'); // carries ref_XXXXX if opened via referral link
     req.dbUser = getOrCreateUser(tgUser, startParam);
 
+    const banStatus = isBanned(tgUser.id);
+    if (banStatus.banned) {
+      return res.status(403).json({ error: 'banned', reason: banStatus.reason });
+    }
+
     // جوین اجباری کانال (اگه تو Variables تنظیم شده باشه)
     if (process.env.REQUIRED_CHANNEL) {
       const joined = await isChannelMember(process.env.REQUIRED_CHANNEL, tgUser.id);
@@ -136,23 +144,37 @@ function priceCart(items) {
 
 // checkout: pay with wallet balance (rial) — items: [{productId, qty}], note: آیدی گیرنده/اکانت مقصد
 app.post('/api/checkout/wallet', requireTelegramAuth, (req, res) => {
-  const { items, note } = req.body;
+  const { items, note, currency } = req.body; // currency: 'RIAL' (پیش‌فرض) | 'USDT' | 'TON'
   if (!Array.isArray(items) || !items.length) return res.status(400).json({ error: 'سبد خرید خالی است' });
 
   let total, resolved;
   try { ({ total, resolved } = priceCart(items)); }
   catch (e) { return res.status(404).json({ error: e.message }); }
 
-  const user = getUser(req.dbUser.tg_id);
-  if (user.balance_rial < total) return res.status(400).json({ error: 'موجودی کیف‌پول کافی نیست' });
+  const cur = currency || 'RIAL';
+  let amountCharged, currencyLabel;
 
-  adjustBalance(user.tg_id, 'rial', -total, 'خرید از فروشگاه (کیف‌پول)');
+  if (cur === 'RIAL') {
+    const user = getUser(req.dbUser.tg_id);
+    if (user.balance_rial < total) return res.status(400).json({ error: 'موجودی کیف‌پول کافی نیست' });
+    adjustBalance(user.tg_id, 'rial', -total, 'خرید از فروشگاه (کیف‌پول)');
+    amountCharged = `${total.toLocaleString()} تومان`;
+  } else {
+    const priceRow = db.prepare(`SELECT price_toman FROM currencies WHERE code = ?`).get(cur);
+    if (!priceRow || !priceRow.price_toman) return res.status(503).json({ error: `قیمت ${cur} هنوز تنظیم نشده` });
+    const cryptoAmount = +(total / priceRow.price_toman).toFixed(6);
+    const bal = getCurrencyBalance(req.dbUser.tg_id, cur);
+    if (bal < cryptoAmount) return res.status(400).json({ error: `موجودی ${cur} کافی نیست` });
+    adjustCurrencyBalance(req.dbUser.tg_id, cur, -cryptoAmount);
+    amountCharged = `${cryptoAmount} ${cur}`;
+  }
+
   resolved.forEach(({ product, qty }) => {
-    createOrder(user.tg_id, product.id, qty, product.price_rial * qty, 'wallet', note || null);
+    createOrder(req.dbUser.tg_id, product.id, qty, product.price_rial * qty, cur === 'RIAL' ? 'wallet' : cur.toLowerCase(), note || null);
   });
-  payReferralCommission(user.tg_id, total);
+  if (cur === 'RIAL') payReferralCommission(req.dbUser.tg_id, total);
 
-  sendMessage(user.tg_id, `✅ سفارش شما ثبت شد.\nمبلغ: ${total.toLocaleString()} تومان${note ? `\nمقصد: ${note}` : ''}`).catch(() => {});
+  sendMessage(req.dbUser.tg_id, `✅ سفارش شما ثبت شد.\nمبلغ: ${amountCharged}${note ? `\nمقصد: ${note}` : ''}`).catch(() => {});
   res.json({ ok: true, total });
 });
 
@@ -256,10 +278,12 @@ app.get('/api/gifts/my', requireTelegramAuth, (req, res) => {
 
 // آگهی جدید — گیفت واقعی خودم رو برای فروش می‌ذارم
 app.post('/api/gifts/list', requireTelegramAuth, (req, res) => {
-  const { title, image_url, category, price } = req.body;
+  const { title, image_url, category, price, currency } = req.body;
   const p = Number(price);
-  if (!title || !p || p < 5000) return res.status(400).json({ error: 'عنوان و قیمت معتبر لازمه' });
-  const id = createListing(req.dbUser.tg_id, title, image_url, category, p);
+  const cur = currency || 'RIAL';
+  const minPrice = cur === 'RIAL' ? 5000 : 0.01;
+  if (!title || !p || p < minPrice) return res.status(400).json({ error: 'عنوان و قیمت معتبر لازمه' });
+  const id = createListing(req.dbUser.tg_id, title, image_url, category, p, cur);
   res.json({ ok: true, id });
 });
 
@@ -369,6 +393,32 @@ app.post('/api/tasks/:id/claim', requireTelegramAuth, async (req, res) => {
   res.json({ ok: true });
 });
 
+/* =========================================================================
+   SUPPORT TICKETS — پشتیبانی داخل مینی‌اپ (تیکت با ادمین)
+   ========================================================================= */
+app.get('/api/support/messages', requireTelegramAuth, (req, res) => {
+  const ticket = getOrCreateOpenTicket(req.dbUser.tg_id);
+  res.json({ ticketId: ticket.id, messages: getTicketMessages(ticket.id) });
+});
+app.post('/api/support/send', requireTelegramAuth, upload.single('image'), async (req, res) => {
+  const text = req.body.text || '';
+  if (!text.trim() && !req.file) return res.status(400).json({ error: 'پیام یا عکس رو وارد کن' });
+  const ticket = getOrCreateOpenTicket(req.dbUser.tg_id);
+  const imageUrl = req.file ? `/uploads/${req.file.filename}` : null;
+  addSupportMessage(ticket.id, 'user', text, imageUrl);
+
+  const adminIdsList = (process.env.ADMIN_IDS || '').split(',').map(s => s.trim()).filter(Boolean);
+  const who = `${req.dbUser.first_name || ''} (${req.dbUser.tg_id})`;
+  adminIdsList.forEach(id2 => {
+    if (imageUrl) {
+      sendMessage(id2, `🎫 تیکت جدید از ${who}\n${text}\n\n(عکس ضمیمه — تو پنل ادمین → پشتیبانی ببینش)`).catch(() => {});
+    } else {
+      sendMessage(id2, `🎫 تیکت جدید از ${who}\n${text}`).catch(() => {});
+    }
+  });
+  res.json({ ok: true, ticketId: ticket.id });
+});
+
 // شارژ کیف‌پول با کارت‌به‌کارت — نیاز به تایید دستی ادمین داره
 app.post('/api/wallet/card-topup', requireTelegramAuth, async (req, res) => {
   const amount = Number(req.body.amount);
@@ -391,7 +441,7 @@ app.post('/api/wallet/card-topup', requireTelegramAuth, async (req, res) => {
 });
 
 /* =========================================================================
-   MULTI-CURRENCY WALLET — تتر و تون (گرام) — قیمت لحظه‌ای از نوبیتکس
+   MULTI-CURRENCY WALLET — تتر و تون (گرام) — قیمت رو خودت از پنل تنظیم می‌کنی
    واریز/برداشت با تایید دستی ادمین، تبدیل آنی بین ریال/تتر/تون خودکاره
    ========================================================================= */
 app.get('/api/currencies', (req, res) => {
@@ -511,7 +561,6 @@ app.post('/api/wallet/rial-withdraw', requireTelegramAuth, (req, res) => {
    CARD GAME — فروشگاه کارت، مچ‌سازی ۱به۱، لیدربورد
    ========================================================================= */
 const GAME_DAILY_LIMIT = Number(process.env.GAME_DAILY_LIMIT || 5);
-const GAME_MIN_DECK_SIZE = Number(process.env.GAME_MIN_DECK_SIZE || 5);
 const GAME_EXTRA_PLAY_PRICE = Number(process.env.GAME_EXTRA_PLAY_PRICE_RIAL || 20000);
 const GAME_EXTRA_PLAY_COUNT = Number(process.env.GAME_EXTRA_PLAY_COUNT || 3);
 
@@ -538,13 +587,18 @@ app.post('/api/game/sacrifice-upgrade', requireTelegramAuth, (req, res) => {
 app.get('/api/game/history', requireTelegramAuth, (req, res) => {
   res.json(getMatchHistory(req.dbUser.tg_id));
 });
+app.get('/api/game/config', (req, res) => {
+  res.json(getGameConfig());
+});
 
 app.get('/api/game/status', requireTelegramAuth, (req, res) => {
   const remaining = getPlaysRemaining(req.dbUser.tg_id, GAME_DAILY_LIMIT);
   const q = getQueueStatus(req.dbUser.tg_id);
   const user = getUser(req.dbUser.tg_id);
+  const cfg = getGameConfig();
   res.json({
-    dailyLimit: GAME_DAILY_LIMIT, playsRemaining: remaining, minDeckSize: GAME_MIN_DECK_SIZE,
+    dailyLimit: GAME_DAILY_LIMIT, playsRemaining: remaining,
+    minDeckSize: cfg.minDeckSize, maxDeckSize: cfg.maxDeckSize,
     extraPlayPrice: GAME_EXTRA_PLAY_PRICE, extraPlayCount: GAME_EXTRA_PLAY_COUNT,
     extraPlays: user.extra_plays || 0,
     rank: getMyRank(req.dbUser.tg_id), ...q,
@@ -560,13 +614,19 @@ app.post('/api/game/buy-extra-plays', requireTelegramAuth, (req, res) => {
 app.post('/api/game/queue', requireTelegramAuth, (req, res) => {
   const remaining = getPlaysRemaining(req.dbUser.tg_id, GAME_DAILY_LIMIT);
   if (remaining <= 0) return res.status(400).json({ error: 'سهمیه بازی امروزت تموم شده' });
+  const cfg = getGameConfig();
   try {
-    const result = joinQueue(req.dbUser.tg_id, req.body.cardIds, GAME_MIN_DECK_SIZE);
+    const result = joinQueue(req.dbUser.tg_id, req.body.cardIds, cfg.minDeckSize, cfg.maxDeckSize);
     if (result.matched && result.opponentTgId) {
       const won = result.won;
+      // پیام به هر دو نفر — چه برنده چه بازنده، هر دو خودکار مطلع می‌شن
       sendMessage(result.opponentTgId, won
-        ? `⚔️ مسابقه پیدا شد! متاسفانه باختی.\nقدرت تو: ${result.oppPower} | حریف: ${result.myPower}`
-        : `⚔️ مسابقه پیدا شد! بردی 🎉\nقدرت تو: ${result.oppPower} | حریف: ${result.myPower}`
+        ? `⚔️ نبرد تموم شد! متاسفانه باختی.\nقدرت تو: ${result.oppPower} | حریف: ${result.myPower}`
+        : `⚔️ نبرد تموم شد! بردی 🎉\nقدرت تو: ${result.oppPower} | حریف: ${result.myPower}`
+      ).catch(() => {});
+      sendMessage(req.dbUser.tg_id, won
+        ? `⚔️ نبرد تموم شد! بردی 🎉\nقدرت تو: ${result.myPower} | حریف: ${result.oppPower}`
+        : `⚔️ نبرد تموم شد! متاسفانه باختی.\nقدرت تو: ${result.myPower} | حریف: ${result.oppPower}`
       ).catch(() => {});
     }
     res.json(result);
