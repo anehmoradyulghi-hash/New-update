@@ -160,23 +160,23 @@
     box-shadow:var(--rarity-glow,none); transition:.15s;
   }
   .game-card.selected{border-color:var(--violet); box-shadow:0 0 16px rgba(124,108,255,.4); transform:translateY(-2px);}
-  .game-card .gc-img{width:100%; height:84px; object-fit:cover; display:block;}
-  .game-card .gc-noimg{width:100%; height:84px; display:flex; align-items:center; justify-content:center; font-size:30px; background:linear-gradient(160deg,var(--surface-3),var(--surface-2));}
+  .game-card .gc-img{width:100%; height:132px; object-fit:cover; display:block;}
+  .game-card .gc-noimg{width:100%; height:132px; display:flex; align-items:center; justify-content:center; font-size:42px; background:linear-gradient(160deg,var(--surface-3),var(--surface-2));}
   .game-card .gc-power{
-    position:absolute; top:6px; left:6px; background:rgba(0,0,0,.65); backdrop-filter:blur(4px);
-    border-radius:8px; padding:2px 7px; font-size:10px; font-weight:900; color:var(--rarity,#fff);
-    display:flex; align-items:center; gap:3px;
+    position:absolute; top:7px; left:7px; background:rgba(0,0,0,.7); backdrop-filter:blur(4px);
+    border-radius:9px; padding:3px 8px; font-size:11.5px; font-weight:900; color:var(--rarity,#fff);
+    display:flex; align-items:center; gap:3px; box-shadow:0 2px 8px rgba(0,0,0,.3);
   }
   .game-card .gc-level{
-    position:absolute; top:6px; right:6px; background:linear-gradient(150deg,var(--gold-1),var(--gold-2));
-    color:#241900; border-radius:8px; padding:2px 7px; font-size:9.5px; font-weight:900;
+    position:absolute; top:7px; right:7px; background:linear-gradient(150deg,var(--gold-1),var(--gold-2));
+    color:#241900; border-radius:9px; padding:3px 8px; font-size:10.5px; font-weight:900; box-shadow:0 2px 8px rgba(0,0,0,.3);
   }
-  .game-card .gc-body{padding:9px 10px 11px;}
-  .game-card .gc-name{font-size:12px; font-weight:800; margin-bottom:2px;}
-  .game-card .gc-sub{font-size:9.5px; color:var(--text-2);}
-  .game-card .gc-actions{display:flex; flex-direction:column; gap:5px; margin-top:8px;}
+  .game-card .gc-body{padding:7px 9px 8px;}
+  .game-card .gc-name{font-size:11.5px; font-weight:800; margin-bottom:1px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;}
+  .game-card .gc-sub{font-size:9px; color:var(--text-2);}
+  .game-card .gc-actions{display:flex; flex-direction:column; gap:4px; margin-top:6px;}
   .game-card .gc-btn{
-    border:none; border-radius:8px; padding:6px; font-size:10px; font-weight:800; cursor:pointer; font-family:inherit; color:#fff;
+    border:none; border-radius:7px; padding:5px 4px; font-size:9.5px; font-weight:800; cursor:pointer; font-family:inherit; color:#fff;
   }
 
   .vs-arena{text-align:center; padding:10px 0 6px;}
@@ -542,7 +542,7 @@
           <div class="li-text">زیرمجموعه‌گیری</div>
           <div class="chev">‹</div>
         </div>
-        <div class="list-row" onclick="showToast('🎧 پشتیبانی به‌زودی در دسترس است')">
+        <div class="list-row" onclick="goTo('support')">
           <div class="li-icon">🎧</div>
           <div class="li-text">پشتیبانی آنلاین</div>
           <div class="chev">‹</div>
@@ -686,7 +686,22 @@
       <div id="gm-content"></div>
     </section>
 
+    <!-- ============ SUPPORT ============ -->
+    <section class="page" id="page-support">
+      <div class="sec-title" style="margin-top:4px;"><h2>🎧 پشتیبانی آنلاین</h2></div>
+      <div id="support-messages" style="display:flex; flex-direction:column; gap:10px; margin-bottom:90px;"></div>
+    </section>
+
   </main>
+
+  <div id="support-input-bar" style="display:none; position:fixed; bottom:0; left:50%; transform:translateX(-50%); width:100%; max-width:430px; background:var(--bg-1); border-top:1px solid var(--border); padding:10px 12px; z-index:38; gap:8px;">
+    <div style="display:flex; gap:8px; align-items:center;">
+      <input type="file" accept="image/*" id="support-image-input" style="display:none;" onchange="sendSupportMessage(true)">
+      <button class="wbtn" style="width:auto; padding:10px;" onclick="document.getElementById('support-image-input').click()">📎</button>
+      <input class="input-box" id="support-text-input" placeholder="پیامت رو بنویس…" style="margin-bottom:0; flex:1;">
+      <button class="wbtn primary" style="width:auto; padding:10px 16px;" onclick="sendSupportMessage(false)">ارسال</button>
+    </div>
+  </div>
 
   <button class="fab-cart" id="fab-cart" onclick="openCart()">
     <span class="l">🛒 <span id="fab-count">0</span> کالا در سبد</span>
@@ -886,8 +901,15 @@
       <div id="list-gift-image-preview" style="margin-top:8px;"></div>
     </div>
     <div class="field" style="text-align:right; margin-bottom:6px;">
-      <label style="font-size:11.5px; color:var(--text-1); font-weight:600; display:block; margin-bottom:6px;">قیمت (تومان)</label>
-      <input class="input-box" id="list-gift-price" placeholder="قیمت به تومان…" inputmode="numeric">
+      <label style="font-size:11.5px; color:var(--text-1); font-weight:600; display:block; margin-bottom:6px;">ارز و قیمت</label>
+      <div style="display:flex; gap:8px;">
+        <select id="list-gift-currency" class="input-box" style="margin-bottom:0; max-width:100px;">
+          <option value="RIAL">تومان</option>
+          <option value="USDT">USDT</option>
+          <option value="TON">TON</option>
+        </select>
+        <input class="input-box" id="list-gift-price" placeholder="قیمت…" inputmode="decimal" style="margin-bottom:0; flex:1;">
+      </div>
     </div>
     <button class="btn-main" onclick="confirmListGift()">ثبت آگهی</button>
   </div>
@@ -934,6 +956,7 @@ async function api(path, opts = {}) {
   if (!res.ok) {
     const err = new Error(data.error || 'خطای سرور');
     if (data.error === 'join_required') { err.joinRequired = true; err.channel = data.channel; }
+    if (data.error === 'banned') { err.banned = true; err.reason = data.reason; }
     throw err;
   }
   return data;
@@ -988,7 +1011,22 @@ async function boot() {
     renderGrid();
     updateHeaderChip();
     updateFab();
+    // قیمت‌ها و موجودی تتر/تون رو جدا و بدون بلاک کردن بارگذاری اصلی می‌گیریم
+    Promise.all([ api('/api/prices').catch(()=>({})), api('/api/wallet/balances').catch(()=>[]) ]).then(([prices, balances]) => {
+      state.prices = prices;
+      state.myBalances = {};
+      (balances || []).forEach(b => { state.myBalances[b.code] = b.amount; });
+    });
   } catch (e) {
+    if (e.banned) {
+      document.getElementById('app').innerHTML = `
+        <div style="padding:60px 24px; text-align:center; color:var(--text-1);">
+          <div style="font-size:34px; margin-bottom:14px;">⛔</div>
+          <div style="font-size:14px; font-weight:700; margin-bottom:8px;">دسترسی شما محدود شده</div>
+          <div style="font-size:12px; color:var(--text-2);">دلیل: ${e.reason || 'نامشخص'}</div>
+        </div>`;
+      return;
+    }
     if (e.joinRequired) {
       document.getElementById('app').innerHTML = `
         <div style="padding:60px 24px; text-align:center; color:var(--text-1);">
@@ -1066,6 +1104,8 @@ function goTo(page){
   if(page==='tasks') renderTasksPage();
   if(page==='games') renderGames();
   if(page==='giftmarket') { gmTab='market'; switchGiftMarketTab('market'); }
+  if(page==='support') renderSupport();
+  document.getElementById('support-input-bar').style.display = (page==='support') ? 'block' : 'none';
   if(page==='cardgame') { cgTab='shop'; switchCardGameTab('shop'); }
   window.scrollTo(0,0);
   haptic('light');
@@ -1157,10 +1197,20 @@ function openCheckout(){
 }
 function renderPayOptions(total, starsEquiv){
   const opts = [
-    {id:'wallet', icon:'👛', title:'موجودی کیف‌پول', sub:`موجودی فعلی: ${fmt(state.balanceRial)} تومان`, disabled: state.balanceRial < total},
+    {id:'wallet', icon:'👛', title:'موجودی کیف‌پول (ریال)', sub:`موجودی فعلی: ${fmt(state.balanceRial)} تومان`, disabled: state.balanceRial < total},
     {id:'stars', icon:'⭐️', title:'پرداخت با استارز تلگرام', sub:`معادل تقریبی ${fmt(starsEquiv)}⭐️`, disabled:false},
-    {id:'gateway', icon:'🏦', title:'درگاه پرداخت آنلاین', sub:'پرداخت مستقیم ریالی، بدون نیاز به موجودی', disabled:false}
+    {id:'gateway', icon:'🏦', title:'درگاه پرداخت آنلاین', sub:'پرداخت مستقیم ریالی، بدون نیاز به موجودی', disabled:false},
   ];
+  if (state.prices?.usdt) {
+    const need = +(total / state.prices.usdt).toFixed(4);
+    const bal = state.myBalances?.USDT || 0;
+    opts.push({id:'USDT', icon:'💵', title:'پرداخت با تتر', sub:`معادل ${need} USDT — موجودی: ${bal}`, disabled: bal < need});
+  }
+  if (state.prices?.ton) {
+    const need = +(total / state.prices.ton).toFixed(4);
+    const bal = state.myBalances?.TON || 0;
+    opts.push({id:'TON', icon:'💎', title:'پرداخت با تون', sub:`معادل ${need} TON — موجودی: ${bal}`, disabled: bal < need});
+  }
   document.getElementById('pay-options').innerHTML = opts.map(o=>`
     <div class="pay-option ${state.checkoutMethod===o.id?'sel':''}" style="${o.disabled?'opacity:.45':''}" onclick="${o.disabled?'':`selectPayMethod('${o.id}')`}">
       <div class="pi">${o.icon}</div>
@@ -1188,8 +1238,9 @@ async function confirmPayment(){
   if (needsNote && note === undefined) { showToast('❌ لطفاً آیدی/یوزرنیم مقصد رو وارد کن'); return; }
 
   try {
-    if (state.checkoutMethod === 'wallet') {
-      await api('/api/checkout/wallet', { method:'POST', body: JSON.stringify({ items, note }) });
+    if (state.checkoutMethod === 'wallet' || state.checkoutMethod === 'USDT' || state.checkoutMethod === 'TON') {
+      const currency = state.checkoutMethod === 'wallet' ? 'RIAL' : state.checkoutMethod;
+      await api('/api/checkout/wallet', { method:'POST', body: JSON.stringify({ items, note, currency }) });
       state.cart = {};
       await refreshMe();
       closeSheet('overlay-checkout');
@@ -1716,7 +1767,7 @@ async function renderGiftMarket(){
             <div class="pname">${g.title}</div>
             <div class="pdesc">فروشنده: ${g.first_name||'کاربر'}${g.username?' @'+g.username:''}</div>
             <div class="prow">
-              <div class="price">${fmt(g.price_rial)}<small> ت</small></div>
+              <div class="price">${g.currency_code==='RIAL'?fmt(g.price_rial)+' ت':g.price_rial+' '+g.currency_code}</div>
               <button class="addbtn" onclick="buyMarketGift(${g.id})">🛒</button>
             </div>
           </div>
@@ -1749,7 +1800,7 @@ async function renderMyListings(){
         <div style="flex:1;">
           <div class="pname">${g.title}</div>
           <div class="pdesc">${iAmSeller ? 'فروشنده تو هستی' : 'خریدار تو هستی'} — ${statusLabel[g.status]}</div>
-          <div class="price" style="margin-top:4px;">${fmt(g.price_rial)} ت</div>
+          <div class="price" style="margin-top:4px;">${g.currency_code==='RIAL'?fmt(g.price_rial)+' ت':g.price_rial+' '+g.currency_code}</div>
         </div>
         ${iAmSeller && g.status==='listed' ? `<button class="addbtn" style="width:auto; padding:0 12px; background:var(--danger);" onclick="cancelGiftListing(${g.id})">لغو</button>` : ''}
         ${!iAmSeller && g.status==='reserved' ? `<button class="addbtn" style="width:auto; padding:0 12px;" onclick="confirmGiftReceived(${g.id})">گرفتم ✅</button>` : ''}
@@ -1796,11 +1847,13 @@ async function confirmListGift(){
   const title = document.getElementById('list-gift-title').value.trim();
   const image_url = document.getElementById('list-gift-image').value.trim();
   const category = document.getElementById('list-gift-category').value;
-  const price = Number(document.getElementById('list-gift-price').value.replace(/[^\d]/g,''));
+  const currency = document.getElementById('list-gift-currency').value;
+  const price = Number(document.getElementById('list-gift-price').value);
+  const minPrice = currency === 'RIAL' ? 5000 : 0.01;
   if (!title) { showToast('❌ اسم گیفت رو بنویس'); return; }
-  if (!price || price < 5000) { showToast('❌ قیمت معتبر وارد کن'); return; }
+  if (!price || price < minPrice) { showToast('❌ قیمت معتبر وارد کن'); return; }
   try {
-    await api('/api/gifts/list', { method:'POST', body: JSON.stringify({ title, image_url, category, price }) });
+    await api('/api/gifts/list', { method:'POST', body: JSON.stringify({ title, image_url, category, price, currency }) });
     closeSheet('overlay-list-gift');
     await renderMyListings();
     haptic('heavy');
@@ -1861,7 +1914,7 @@ async function renderCgInventory(){
       const r = cardRarityStyle(c.effective_power);
       return `
       <div class="game-card" style="--rarity:${r.color}; --rarity-glow:${r.glow};">
-        ${c.image_url ? `<img class="gc-img" src="${c.image_url}">` : `<div class="gc-noimg">🃏</div>`}
+        ${c.display_image ? `<img class="gc-img" src="${c.display_image}">` : `<div class="gc-noimg">🃏</div>`}
         <div class="gc-power">⚡ ${c.effective_power}</div>
         <div class="gc-level">Lv${c.level}</div>
         <div class="gc-body">
@@ -1915,61 +1968,4 @@ async function renderCgFreeCards(){
   try {
     const tasks = await api('/api/card-tasks');
     wrap.innerHTML = tasks.length ? tasks.map(t=>`
-      <div class="pcard" style="width:100%; flex-direction:row; align-items:center; gap:12px; margin-bottom:10px;">
-        ${t.card_image ? `<img src="${t.card_image}" style="width:44px; height:44px; object-fit:cover; border-radius:9px; flex-shrink:0;">` : `<div class="picon">${t.type==='join_channel'?'📢':'🔗'}</div>`}
-        <div style="flex:1;">
-          <div class="pname">${t.title}</div>
-          <div class="pdesc">${t.description||''} — جایزه: 🃏 ${t.card_name} (قدرت ${t.card_power})</div>
-        </div>
-        ${t.done
-          ? `<span style="background:rgba(51,217,152,.13); color:var(--success); padding:6px 12px; border-radius:999px; font-size:11px; font-weight:800;">گرفتی ✓</span>`
-          : `<button class="addbtn" style="width:auto; padding:0 14px; height:32px; border-radius:9px;" onclick="doCardTask('${t.id}','${t.type}','${t.channel_username||''}','${t.link||''}')">بگیر</button>`}
-      </div>
-    `).join('') : `<div class="empty"><div class="e-icon">🎁</div><p>فعلاً تسک کارت‌داری فعال نیست</p></div>`;
-  } catch (e) { showToast('❌ ' + e.message); }
-}
-async function doCardTask(id, type, channel, link){
-  if (type === 'join_channel' && channel) window.open('https://t.me/' + channel, '_blank');
-  if (type === 'link' && link) window.open(link, '_blank');
-  try {
-    await api(`/api/card-tasks/${id}/claim`, { method:'POST' });
-    await renderCgFreeCards();
-    haptic('heavy');
-    showToast('🎉 کارت رایگان دریافت شد');
-  } catch (e) { showToast('❌ ' + e.message); }
-}
-
-async function renderCgHistory(){
-  const wrap = document.getElementById('cg-content');
-  wrap.innerHTML = `<div class="empty"><p>در حال بارگذاری…</p></div>`;
-  try {
-    const rows = await api('/api/game/history');
-    wrap.innerHTML = rows.length ? rows.map(m => `
-      <div class="panel" style="padding:14px; margin-bottom:10px; border-color:${m.won?'rgba(51,217,152,.3)':'rgba(255,107,122,.3)'};">
-        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
-          <div style="font-size:12.5px; font-weight:800; color:${m.won?'var(--success)':'var(--danger)'};">${m.won ? '🏆 برد' : '💔 باخت'} — مقابل ${m.opponentName}${m.opponentUsername?' @'+m.opponentUsername:''}</div>
-          <div style="font-size:10px; color:var(--text-2);">${m.created_at?.slice(0,16)}</div>
-        </div>
-        <div style="font-size:11px; color:var(--text-1); margin-bottom:8px;">قدرت تو: ${m.myPower} — قدرت حریف: ${m.oppPower}</div>
-        <div style="display:flex; gap:6px; flex-wrap:wrap;">
-          ${m.myCards.map(c=>`<span style="font-size:9.5px; background:var(--surface-2); border:1px solid var(--border); border-radius:7px; padding:3px 8px;">${c.name} (Lv${c.level})</span>`).join('')}
-        </div>
-      </div>
-    `).join('') : `<div class="empty"><div class="e-icon">📜</div><p>هنوز نبردی نداشتی</p></div>`;
-  } catch (e) { showToast('❌ ' + e.message); }
-}
-
-async function renderCgShop(){
-  const wrap = document.getElementById('cg-content');
-  wrap.innerHTML = `<div class="empty"><p>در حال بارگذاری…</p></div>`;
-  try {
-    const cards = await api('/api/game/cards');
-    wrap.innerHTML = cards.length ? `<div class="grid">${cards.map(c => {
-      const r = cardRarityStyle(c.power);
-      return `
-      <div class="game-card" style="--rarity:${r.color}; --rarity-glow:${r.glow};">
-        ${c.image_url ? `<img class="gc-img" src="${c.image_url}">` : `<div class="gc-noimg">🃏</div>`}
-        <div class="gc-power">⚡ ${c.power}</div>
-        <div class="gc-body">
-          <div class="gc-name">${c.name}</div>
-          <div class="gc-sub" style="color:${r.colo
+      <div class="pcard" style="width:100%; flex-direction:row; align-items
