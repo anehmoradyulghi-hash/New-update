@@ -843,41 +843,10 @@ process.on('uncaughtException', (err) => {
   console.error('[uncaughtException]', err);
 });
 
-// انتهای فایل server.js
-
-const PORT = process.env.PORT || 8080; // Railway معمولاً از 8080 استفاده می‌کند
-// اضافه کردن یک مسیر برای چک کردن سلامت سرور توسط Railway
-app.get('/', (req, res) => {
-  res.status(200).send('OK - Starkadeh is running');
-});
-
-// مسیر تست سلامت اختصاصی (اگر در پنل Railway تنظیم کرده‌اید)
-app.get('/health', (req, res) => {
-  res.status(200).json({ status: 'up', timestamp: new Date() });
-});
-
-app.listen(PORT, '0.0.0.0', () => {
-  console.log(`🚀 Server is listening on port ${PORT}`);
-  
-  // اجرای تنظیمات بات و قیمت‌ها "بعد" از بالا آمدن سرور و بدون await
-  boot();
-});
-
-async function boot() {
-  console.log("🛠 Starting background tasks...");
-  
-  // 1. دریافت قیمت‌ها در پس‌زمینه (بدون بلاک کردن سرور)
-  getLivePrices().then(() => {
-    console.log("✅ Initial prices fetched.");
-  }).catch(err => console.error("❌ Price fetch error:", err.message));
-
-  // 2. تنظیم وبهوک تلگرام (بدون اینکه سرور منتظر بماند)
+app.listen(process.env.PORT || 8080, async () => {
+  console.log(`🚀 server running on port ${process.env.PORT || 8080}`);
   if (process.env.PUBLIC_URL) {
-    try {
-      const r = await setWebhook(`${process.env.PUBLIC_URL}/telegram-webhook`, process.env.WEBHOOK_SECRET);
-      console.log('🌐 Webhook status:', r.ok);
-    } catch (e) {
-      console.error('❌ Webhook failed:', e.message);
-    }
+    const r = await setWebhook(`${process.env.PUBLIC_URL}/telegram-webhook`, process.env.WEBHOOK_SECRET);
+    console.log('webhook set:', r.ok);
   }
-}
+});
