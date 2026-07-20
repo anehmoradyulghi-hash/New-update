@@ -165,6 +165,9 @@
     <div class="nav-item" data-p="gamecards" onclick="go('gamecards')"><span class="ic">🃏</span> کارت‌های بازی</div>
     <div class="nav-item" data-p="leaderboard" onclick="go('leaderboard')"><span class="ic">🏆</span> لیدربورد</div>
     <div class="nav-item" data-p="cardtasks" onclick="go('cardtasks')"><span class="ic">🎁</span> تسک کارت</div>
+    <div class="nav-item" data-p="gameconfig" onclick="go('gameconfig')"><span class="ic">⚙️</span> تنظیمات بازی</div>
+    <div class="nav-item" data-p="tickets" onclick="go('tickets')"><span class="ic">🎧</span> پشتیبانی</div>
+    <div class="nav-item" data-p="broadcast" onclick="go('broadcast')"><span class="ic">📣</span> پیام همگانی</div>
     <button class="btn secondary logout-btn" onclick="logout()">خروج از حساب</button>
   </aside>
 
@@ -214,7 +217,7 @@ async function api(path, opts={}){
 function go(page){
   currentPage = page;
   document.querySelectorAll('.nav-item').forEach(n=>n.classList.toggle('active', n.dataset.p===page));
-  const renderers = {dashboard:renderDashboard, users:renderUsers, orders:renderOrders, products:renderProducts, transactions:renderTransactions, referrals:renderReferrals, tasks:renderTasks, giftmarket:renderGiftMarketAdmin, giftcats:renderGiftCategories, currencies:renderCurrencies, gamecards:renderGameCards, leaderboard:renderLeaderboardAdmin, cardtasks:renderCardTasksAdmin};
+  const renderers = {dashboard:renderDashboard, users:renderUsers, orders:renderOrders, products:renderProducts, transactions:renderTransactions, referrals:renderReferrals, tasks:renderTasks, giftmarket:renderGiftMarketAdmin, giftcats:renderGiftCategories, currencies:renderCurrencies, gamecards:renderGameCards, leaderboard:renderLeaderboardAdmin, cardtasks:renderCardTasksAdmin, gameconfig:renderGameConfig, tickets:renderTickets, broadcast:renderBroadcast};
   renderers[page]();
 }
 
@@ -273,7 +276,7 @@ async function renderUsers(q=''){
     <div class="page-head"><div><h1>کاربران</h1><p>لیست کاربران مینی‌اپ و موجودی آن‌ها</p></div></div>
     <div class="toolbar"><input id="user-search" placeholder="جستجو بر اساس آی‌دی، یوزرنیم یا نام…" value="${q}" oninput="debounceUserSearch(this.value)"></div>
     <div class="panel" style="padding:0;"><table>
-      <thead><tr><th>کاربر</th><th>آی‌دی تلگرام</th><th>موجودی ریال</th><th>موجودی استارز</th><th>تاریخ عضویت</th></tr></thead>
+      <thead><tr><th>کاربر</th><th>آی‌دی تلگرام</th><th>موجودی ریال</th><th>موجودی استارز</th><th>وضعیت</th></tr></thead>
       <tbody id="users-tbody"><tr class="empty-row"><td colspan="5">در حال بارگذاری…</td></tr></tbody>
     </table></div>
   `;
@@ -284,7 +287,7 @@ async function renderUsers(q=''){
       <td class="mono">${u.tg_id}</td>
       <td class="mono">${fmt(u.balance_rial)} ت</td>
       <td class="mono">⭐️ ${fmt(u.balance_stars)}</td>
-      <td>${u.created_at?.slice(0,10) || '—'}</td>
+      <td>${u.banned ? '<span class="pill failed">مسدود</span>' : '<span class="pill active">عادی</span>'}</td>
     </tr>
   `).join('') : `<tr class="empty-row"><td colspan="5">کاربری یافت نشد</td></tr>`;
 }
@@ -299,6 +302,7 @@ async function openUserDetail(tgId){
     <div class="kv"><span>موجودی استارز</span><b class="mono">⭐️ ${fmt(user.balance_stars)}</b></div>
     <div class="kv"><span>تعداد سفارش‌ها</span><b>${orders.length}</b></div>
     <div class="kv"><span>تعداد زیرمجموعه</span><b>${referrals.length}</b></div>
+    <div class="kv"><span>وضعیت</span><b>${user.banned ? '⛔ مسدود — ' + (user.ban_reason||'') : '✅ عادی'}</b></div>
 
     <div style="margin-top:16px; font-size:12.5px; font-weight:800;">اصلاح موجودی</div>
     <div style="display:flex; gap:8px; margin-top:8px;">
@@ -308,11 +312,31 @@ async function openUserDetail(tgId){
     <input id="adj-reason" placeholder="دلیل (اختیاری)" style="margin-top:8px;">
     <button class="btn small" style="width:100%; margin-top:10px;" onclick="adjustBalance(${tgId})">ثبت اصلاح موجودی</button>
 
+    <div style="margin-top:18px; font-size:12.5px; font-weight:800;">${user.banned ? 'رفع محدودیت' : 'محدود کردن کاربر'}</div>
+    ${user.banned
+      ? `<button class="btn small" style="width:100%; margin-top:8px;" onclick="unbanUserUI(${tgId})">✅ رفع محدودیت</button>`
+      : `<input id="ban-reason" placeholder="دلیل مسدودسازی (برای کاربر ارسال می‌شه)" style="margin-top:8px;">
+         <button class="btn danger small" style="width:100%; margin-top:8px;" onclick="banUserUI(${tgId})">⛔ محدود کن</button>`}
+
     <div style="margin-top:18px; font-size:12.5px; font-weight:800;">آخرین سفارش‌ها</div>
     <table style="margin-top:8px;"><tbody>
       ${orders.slice(0,5).map(o=>`<tr><td>${o.product_id} ×${o.qty}</td><td class="mono">${fmt(o.amount_rial)} ت</td><td><span class="pill ${o.status}">${statusLabel(o.status)}</span></td></tr>`).join('') || '<tr class="empty-row"><td colspan="3">سفارشی ثبت نشده</td></tr>'}
     </tbody></table>
   `);
+}
+async function banUserUI(tgId){
+  const reason = document.getElementById('ban-reason').value.trim();
+  if(!confirm('مطمئنی این کاربر مسدود بشه؟')) return;
+  await api(`/users/${tgId}/ban`, {method:'POST', body:JSON.stringify({reason})});
+  toast('⛔ کاربر مسدود شد');
+  closeModal();
+  renderUsers();
+}
+async function unbanUserUI(tgId){
+  await api(`/users/${tgId}/unban`, {method:'POST'});
+  toast('✅ محدودیت برداشته شد');
+  closeModal();
+  renderUsers();
 }
 async function adjustBalance(tgId){
   const currency = document.getElementById('adj-currency').value;
@@ -726,6 +750,7 @@ async function renderCurrencies(){
 function openCurrencyForm(c){
   openModal(`
     <div class="modal-title">ویرایش ${c.name} <span class="x" onclick="closeModal()">✕</span></div>
+    <div class="field"><label>قیمت هر واحد به تومان (دستی — جای نوبیتکس)</label><input id="cf-price" type="number" value="${c.price_toman||0}"></div>
     <div class="field"><label>آدرس والت برای واریز کاربرا</label><input id="cf-address" value="${c.deposit_address||''}"></div>
     <div class="field"><label>توضیح اضافه (شبکه، مموی و...)</label><input id="cf-note" value="${c.deposit_note||''}"></div>
     <div class="field"><label>حداقل مقدار واریز</label><input id="cf-min" type="number" step="any" value="${c.min_amount||0}"></div>
@@ -735,6 +760,7 @@ function openCurrencyForm(c){
 }
 async function saveCurrency(code){
   const body = {
+    price_toman: Number(document.getElementById('cf-price').value) || 0,
     deposit_address: document.getElementById('cf-address').value,
     deposit_note: document.getElementById('cf-note').value,
     min_amount: Number(document.getElementById('cf-min').value) || 0,
@@ -776,6 +802,9 @@ async function renderGameCards(){
 async function openGameCardForm(c=null){
   const currencies = await api('/currencies');
   const options = ['RIAL', ...currencies.map(x=>x.code)];
+  const maxLvl = c?.max_level || 5;
+  let levelImages = {};
+  try { levelImages = c?.level_images ? JSON.parse(c.level_images) : {}; } catch(e){}
   openModal(`
     <div class="modal-title">${c?'ویرایش کارت':'افزودن کارت'} <span class="x" onclick="closeModal()">✕</span></div>
     <div class="field"><label>شناسه (فقط برای کارت جدید)</label><input id="gcf-id" value="${c?.id||''}" ${c?'disabled':''}></div>
@@ -786,28 +815,56 @@ async function openGameCardForm(c=null){
       <select id="gcf-currency">${options.map(o=>`<option value="${o}" ${c?.currency_code===o?'selected':''}>${o}</option>`).join('')}</select>
     </div>
     <div class="field"><label>قیمت خرید</label><input id="gcf-price" type="number" step="any" value="${c?.price||0}"></div>
+    <div class="field"><label>محدودیت خرید</label>
+      <select id="gcf-purchlimit">
+        <option value="" ${!c?.purchase_limit?'selected':''}>نامحدود — هربار قابل خریده</option>
+        <option value="1" ${c?.purchase_limit==1?'selected':''}>فقط یک‌بار برای هر کاربر</option>
+      </select>
+    </div>
 
     <div style="font-size:12.5px; font-weight:800; margin:16px 0 10px; color:var(--text-1);">تنظیمات ارتقا</div>
     <div class="field"><label>ارز هزینه ارتقا</label>
       <select id="gcf-upcur">${options.map(o=>`<option value="${o}" ${c?.upgrade_currency===o?'selected':''}>${o}</option>`).join('')}</select>
     </div>
     <div class="field"><label>هزینه ارتقا در هر سطح</label><input id="gcf-upcost" type="number" step="any" value="${c?.upgrade_cost||0}"></div>
-    <div class="field"><label>حداکثر سطح</label><input id="gcf-maxlvl" type="number" value="${c?.max_level||5}"></div>
+    <div class="field"><label>حداکثر سطح</label><input id="gcf-maxlvl" type="number" value="${maxLvl}" onchange="rebuildLevelImageInputs(this.value)"></div>
     <div class="field"><label>افزایش قدرت به‌ازای هر سطح</label><input id="gcf-pplvl" type="number" value="${c?.power_per_level||5}"></div>
+    <div class="field"><label>درصد بونوس قربانی‌کردن (وقتی این کارت قربانی بشه)</label><input id="gcf-sacpct" type="number" value="${c?.sacrifice_bonus_percent||50}"></div>
 
     <div class="field">
-      <label>عکس کارت</label>
-      <input id="gcf-image-file" type="file" accept="image/*" onchange="uploadGameCardImage(this)">
+      <label>عکس پایه کارت (سطح ۱)</label>
+      <input id="gcf-image-file" type="file" accept="image/*" onchange="uploadGameCardImage(this, 'gcf-image', 'gcf-image-preview')">
       <input type="hidden" id="gcf-image" value="${c?.image_url||''}">
       <div id="gcf-image-preview" style="margin-top:10px;">
         ${c?.image_url ? `<img src="${c.image_url}" style="width:100%; max-height:140px; object-fit:cover; border-radius:10px;">` : ''}
       </div>
     </div>
+
+    <div style="font-size:12.5px; font-weight:800; margin:16px 0 10px; color:var(--text-1);">عکس اختصاصی هر سطح (اختیاری)</div>
+    <div id="gcf-level-images">${buildLevelImageInputsHtml(maxLvl, levelImages)}</div>
+
     ${c ? `<div class="field"><label>وضعیت</label><select id="gcf-active"><option value="1" ${c.active?'selected':''}>فعال</option><option value="0" ${!c.active?'selected':''}>غیرفعال</option></select></div>` : ''}
     <button class="btn" onclick="saveGameCard(${c?`'${c.id}'`:'null'})">ذخیره</button>
   `);
 }
-async function uploadGameCardImage(input){
+function buildLevelImageInputsHtml(maxLvl, levelImages){
+  let html = '';
+  for(let lv=2; lv<=maxLvl; lv++){
+    const url = levelImages[lv] || '';
+    html += `
+      <div class="field" style="margin-bottom:10px;">
+        <label>عکس سطح ${lv}</label>
+        <input type="file" accept="image/*" onchange="uploadGameCardImage(this, 'gcf-lvlimg-${lv}', 'gcf-lvlimg-${lv}-preview')">
+        <input type="hidden" id="gcf-lvlimg-${lv}" value="${url}">
+        <div id="gcf-lvlimg-${lv}-preview" style="margin-top:6px;">${url?`<img src="${url}" style="width:100%; max-height:100px; object-fit:cover; border-radius:8px;">`:''}</div>
+      </div>`;
+  }
+  return html || `<div style="font-size:10.5px; color:var(--text-2);">حداکثر سطح رو ۲ یا بیشتر بذار تا اینجا فعال بشه</div>`;
+}
+function rebuildLevelImageInputs(maxLvl){
+  document.getElementById('gcf-level-images').innerHTML = buildLevelImageInputsHtml(Number(maxLvl), {});
+}
+async function uploadGameCardImage(input, hiddenId, previewId){
   if(!input.files[0]) return;
   const fd = new FormData();
   fd.append('image', input.files[0]);
@@ -815,23 +872,32 @@ async function uploadGameCardImage(input){
     const res = await fetch(`${API}/upload-image`, { method:'POST', headers:{'Authorization':'Bearer '+token}, body: fd });
     const data = await res.json();
     if(!res.ok) throw new Error(data.error || 'خطای آپلود');
-    document.getElementById('gcf-image').value = data.url;
-    document.getElementById('gcf-image-preview').innerHTML = `<img src="${data.url}" style="width:100%; max-height:140px; object-fit:cover; border-radius:10px;">`;
+    document.getElementById(hiddenId).value = data.url;
+    document.getElementById(previewId).innerHTML = `<img src="${data.url}" style="width:100%; max-height:${previewId.includes('lvlimg')?'100':'140'}px; object-fit:cover; border-radius:8px;">`;
     toast('✅ عکس آپلود شد');
   } catch(e){ toast('❌ ' + e.message); }
 }
 async function saveGameCard(existingId){
+  const maxLvl = Number(document.getElementById('gcf-maxlvl').value) || 5;
+  const levelImages = {};
+  for(let lv=2; lv<=maxLvl; lv++){
+    const el = document.getElementById(`gcf-lvlimg-${lv}`);
+    if(el && el.value) levelImages[lv] = el.value;
+  }
   const body = {
     name: document.getElementById('gcf-name').value,
     description: document.getElementById('gcf-desc').value,
     power: Number(document.getElementById('gcf-power').value) || 10,
     currency_code: document.getElementById('gcf-currency').value,
     price: Number(document.getElementById('gcf-price').value) || 0,
+    purchase_limit: document.getElementById('gcf-purchlimit').value || null,
     upgrade_currency: document.getElementById('gcf-upcur').value,
     upgrade_cost: Number(document.getElementById('gcf-upcost').value) || 0,
-    max_level: Number(document.getElementById('gcf-maxlvl').value) || 5,
+    max_level: maxLvl,
     power_per_level: Number(document.getElementById('gcf-pplvl').value) || 5,
+    sacrifice_bonus_percent: Number(document.getElementById('gcf-sacpct').value) || 50,
     image_url: document.getElementById('gcf-image').value || null,
+    level_images: Object.keys(levelImages).length ? JSON.stringify(levelImages) : null,
   };
   if(!body.name){ toast('❌ نام کارت الزامی است'); return; }
   if(existingId){
@@ -1015,6 +1081,122 @@ async function deleteCardTaskUI(id){
   await api(`/card-tasks/${id}`, {method:'DELETE'});
   toast('🗑 حذف شد');
   renderCardTasksAdmin();
+}
+
+/* ===================== GAME CONFIG ===================== */
+async function renderGameConfig(){
+  const m = document.getElementById('main');
+  m.innerHTML = `
+    <div class="page-head"><div><h1>تنظیمات بازی</h1><p>محدوده‌ی قدرت کارت‌ها و حداقل/حداکثر تعداد کارت هر دست</p></div></div>
+    <div class="panel">
+      <div class="field"><label>حداقل قدرت مجاز کارت</label><input id="gcfg-minpower" type="number"></div>
+      <div class="field"><label>حداکثر قدرت مجاز کارت</label><input id="gcfg-maxpower" type="number"></div>
+      <div class="field"><label>حداقل تعداد کارت برای نبرد</label><input id="gcfg-mindeck" type="number"></div>
+      <div class="field"><label>حداکثر تعداد کارت برای نبرد</label><input id="gcfg-maxdeck" type="number"></div>
+      <button class="btn" onclick="saveGameConfig()">ذخیره تنظیمات</button>
+    </div>
+  `;
+  const cfg = await api('/game-config');
+  document.getElementById('gcfg-minpower').value = cfg.minCardPower;
+  document.getElementById('gcfg-maxpower').value = cfg.maxCardPower;
+  document.getElementById('gcfg-mindeck').value = cfg.minDeckSize;
+  document.getElementById('gcfg-maxdeck').value = cfg.maxDeckSize;
+}
+async function saveGameConfig(){
+  const body = {
+    minCardPower: Number(document.getElementById('gcfg-minpower').value),
+    maxCardPower: Number(document.getElementById('gcfg-maxpower').value),
+    minDeckSize: Number(document.getElementById('gcfg-mindeck').value),
+    maxDeckSize: Number(document.getElementById('gcfg-maxdeck').value),
+  };
+  await api('/game-config', {method:'POST', body:JSON.stringify(body)});
+  toast('✅ تنظیمات ذخیره شد');
+}
+
+/* ===================== SUPPORT TICKETS ===================== */
+async function renderTickets(){
+  const m = document.getElementById('main');
+  m.innerHTML = `
+    <div class="page-head"><div><h1>پشتیبانی</h1><p>تیکت‌های کاربران</p></div></div>
+    <div class="panel" style="padding:0;"><table>
+      <thead><tr><th>کاربر</th><th>آخرین پیام</th><th>وضعیت</th><th>تاریخ</th><th></th></tr></thead>
+      <tbody id="tk-tbody"><tr class="empty-row"><td colspan="5">در حال بارگذاری…</td></tr></tbody>
+    </table></div>
+  `;
+  const rows = await api('/tickets');
+  document.getElementById('tk-tbody').innerHTML = rows.length ? rows.map(t=>`
+    <tr>
+      <td>${t.first_name||'—'}${t.username?' @'+t.username:''}</td>
+      <td style="max-width:220px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${t.last_message||'—'}</td>
+      <td><span class="pill ${t.status==='open'?'pending':'active'}">${t.status==='open'?'باز':'بسته'}</span></td>
+      <td>${t.updated_at?.slice(0,16)}</td>
+      <td><button class="btn secondary small" onclick="openTicketChat(${t.id})">مشاهده</button></td>
+    </tr>
+  `).join('') : `<tr class="empty-row"><td colspan="5">تیکتی ثبت نشده</td></tr>`;
+}
+async function openTicketChat(id){
+  const { ticket, messages } = await api(`/tickets/${id}`);
+  openModal(`
+    <div class="modal-title">تیکت #${ticket.id} <span class="x" onclick="closeModal()">✕</span></div>
+    <div id="tk-messages" style="max-height:320px; overflow-y:auto; display:flex; flex-direction:column; gap:8px; margin-bottom:14px;">
+      ${messages.map(m=>`
+        <div style="align-self:${m.sender==='admin'?'flex-end':'flex-start'}; max-width:80%;">
+          <div style="background:${m.sender==='admin'?'var(--violet)':'var(--surface-2)'}; color:${m.sender==='admin'?'#fff':'var(--text-0)'}; border-radius:12px; padding:8px 11px; font-size:12px;">
+            ${m.image_url?`<img src="${m.image_url}" style="width:100%; border-radius:8px; margin-bottom:${m.text?'6px':'0'};">`:''}
+            ${m.text||''}
+          </div>
+        </div>
+      `).join('') || '<div style="color:var(--text-2); font-size:12px;">پیامی نیست</div>'}
+    </div>
+    <input id="tk-reply-text" placeholder="پاسخت رو بنویس…" style="margin-bottom:8px;">
+    <input type="file" accept="image/*" id="tk-reply-image" style="margin-bottom:8px;">
+    <button class="btn" onclick="sendTicketReply(${id})">ارسال پاسخ</button>
+    ${ticket.status==='open' ? `<button class="btn secondary" style="margin-top:8px;" onclick="closeTicketUI(${id})">بستن تیکت</button>` : ''}
+  `);
+}
+async function sendTicketReply(id){
+  const text = document.getElementById('tk-reply-text').value.trim();
+  const file = document.getElementById('tk-reply-image').files[0];
+  if(!text && !file){ toast('❌ متن یا عکس رو وارد کن'); return; }
+  const fd = new FormData();
+  fd.append('text', text);
+  if(file) fd.append('image', file);
+  const res = await fetch(`${API}/tickets/${id}/reply`, {method:'POST', headers:{'Authorization':'Bearer '+token}, body: fd});
+  if(!res.ok){ toast('❌ خطا در ارسال'); return; }
+  toast('✅ پاسخ ارسال شد');
+  openTicketChat(id);
+}
+async function closeTicketUI(id){
+  await api(`/tickets/${id}/close`, {method:'POST'});
+  toast('✅ تیکت بسته شد');
+  closeModal();
+  renderTickets();
+}
+
+/* ===================== BROADCAST ===================== */
+async function renderBroadcast(){
+  const m = document.getElementById('main');
+  m.innerHTML = `
+    <div class="page-head"><div><h1>پیام همگانی</h1><p>پیامت به همه کاربرای ربات از طریق تلگرام فرستاده می‌شه</p></div></div>
+    <div class="panel">
+      <div class="field"><label>متن پیام</label><input id="bc-text" placeholder="متن پیام…"></div>
+      <div class="field"><label>عکس (اختیاری)</label><input type="file" accept="image/*" id="bc-image"></div>
+      <button class="btn" onclick="sendBroadcast()">ارسال به همه</button>
+    </div>
+  `;
+}
+async function sendBroadcast(){
+  const text = document.getElementById('bc-text').value.trim();
+  const file = document.getElementById('bc-image').files[0];
+  if(!text){ toast('❌ متن پیام رو وارد کن'); return; }
+  if(!confirm('مطمئنی این پیام به همه کاربرا فرستاده بشه؟')) return;
+  const fd = new FormData();
+  fd.append('text', text);
+  if(file) fd.append('image', file);
+  const res = await fetch(`${API}/broadcast`, {method:'POST', headers:{'Authorization':'Bearer '+token}, body: fd});
+  const data = await res.json();
+  if(!res.ok){ toast('❌ ' + (data.error||'خطا')); return; }
+  toast(`✅ ارسال برای ${data.total} کاربر شروع شد`);
 }
 
 /* ===================== INIT ===================== */
