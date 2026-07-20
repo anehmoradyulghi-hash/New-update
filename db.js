@@ -143,6 +143,24 @@ CREATE TABLE IF NOT EXISTS game_scores (
   losses INTEGER NOT NULL DEFAULT 0
 );
 
+CREATE TABLE IF NOT EXISTS support_tickets (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  tg_id INTEGER NOT NULL,
+  subject TEXT,
+  status TEXT NOT NULL DEFAULT 'open', -- open | closed
+  created_at TEXT DEFAULT (datetime('now')),
+  updated_at TEXT DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS support_messages (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  ticket_id INTEGER NOT NULL,
+  sender TEXT NOT NULL, -- user | admin
+  text TEXT,
+  image_url TEXT,
+  created_at TEXT DEFAULT (datetime('now'))
+);
+
 CREATE TABLE IF NOT EXISTS leaderboard_prizes (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   rank_from INTEGER NOT NULL,
@@ -239,6 +257,13 @@ tryAddColumn(`ALTER TABLE game_cards ADD COLUMN power_per_level INTEGER NOT NULL
 tryAddColumn(`ALTER TABLE user_cards ADD COLUMN bonus_power INTEGER NOT NULL DEFAULT 0`);
 tryAddColumn(`ALTER TABLE game_matches ADD COLUMN player1_cards TEXT`);
 tryAddColumn(`ALTER TABLE game_matches ADD COLUMN player2_cards TEXT`);
+tryAddColumn(`ALTER TABLE currencies ADD COLUMN price_toman REAL NOT NULL DEFAULT 0`);
+tryAddColumn(`ALTER TABLE game_cards ADD COLUMN purchase_limit INTEGER`); // NULL = نامحدود، عدد = حداکثر تعداد خرید هر کاربر
+tryAddColumn(`ALTER TABLE game_cards ADD COLUMN level_images TEXT`); // JSON: {"1":"url","2":"url",...}
+tryAddColumn(`ALTER TABLE game_cards ADD COLUMN sacrifice_bonus_percent INTEGER NOT NULL DEFAULT 50`);
+tryAddColumn(`ALTER TABLE users ADD COLUMN banned INTEGER NOT NULL DEFAULT 0`);
+tryAddColumn(`ALTER TABLE users ADD COLUMN ban_reason TEXT`);
+tryAddColumn(`ALTER TABLE gift_listings ADD COLUMN currency_code TEXT NOT NULL DEFAULT 'RIAL'`);
 tryAddColumn(`ALTER TABLE gift_listings ADD COLUMN category TEXT`);
 
 // ارزهای ثابت پلتفرم — فقط تتر و تون(گرام)، دیگه از پنل نمی‌شه ارز جدید اضافه کرد
@@ -410,18 +435,21 @@ export function listGameCards(activeOnly = true) {
 export function getGameCard(id) {
   return db.prepare('SELECT * FROM game_cards WHERE id = ?').get(id);
 }
-export function addGameCard(id, name, imageUrl, power, description, currencyCode, price, upgradeCost, upgradeCurrency, maxLevel, powerPerLevel) {
-  db.prepare(`INSERT INTO game_cards (id, name, image_url, power, description, currency_code, price, upgrade_cost, upgrade_currency, max_level, power_per_level) VALUES (?,?,?,?,?,?,?,?,?,?,?)`)
-    .run(id, name, imageUrl || null, power, description || '', currencyCode, price, upgradeCost || 0, upgradeCurrency || 'RIAL', maxLevel || 5, powerPerLevel || 5);
+export function addGameCard(id, name, imageUrl, power, description, currencyCode, price, upgradeCost, upgradeCurrency, maxLevel, powerPerLevel, purchaseLimit, sacrificeBonusPercent) {
+  db.prepare(`INSERT INTO game_cards (id, name, image_url, power, description, currency_code, price, upgrade_cost, upgrade_currency, max_level, power_per_level, purchase_limit, sacrifice_bonus_percent) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+    .run(id, name, imageUrl || null, power, description || '', currencyCode, price, upgradeCost || 0, upgradeCurrency || 'RIAL', maxLevel || 5, powerPerLevel || 5, purchaseLimit || null, sacrificeBonusPercent || 50);
 }
 export function updateGameCard(id, fields) {
   const c = getGameCard(id);
   if (!c) throw new Error('کارت پیدا نشد');
-  db.prepare(`UPDATE game_cards SET name=?, image_url=?, power=?, description=?, currency_code=?, price=?, upgrade_cost=?, upgrade_currency=?, max_level=?, power_per_level=?, active=? WHERE id=?`)
+  db.prepare(`UPDATE game_cards SET name=?, image_url=?, power=?, description=?, currency_code=?, price=?, upgrade_cost=?, upgrade_currency=?, max_level=?, power_per_level=?, purchase_limit=?, sacrifice_bonus_percent=?, level_images=?, active=? WHERE id=?`)
     .run(fields.name ?? c.name, fields.image_url ?? c.image_url, fields.power ?? c.power, fields.description ?? c.description,
          fields.currency_code ?? c.currency_code, fields.price ?? c.price,
          fields.upgrade_cost ?? c.upgrade_cost, fields.upgrade_currency ?? c.upgrade_currency,
          fields.max_level ?? c.max_level, fields.power_per_level ?? c.power_per_level,
+         fields.purchase_limit === undefined ? c.purchase_limit : fields.purchase_limit,
+         fields.sacrifice_bonus_percent ?? c.sacrifice_bonus_percent,
+         fields.level_images === undefined ? c.level_images : fields.level_images,
          fields.active ?? c.active, id);
 }
 export function deleteGameCard(id) {
@@ -430,10 +458,23 @@ export function deleteGameCard(id) {
 export function effectivePower(card, level, bonusPower = 0) {
   return card.power + (level - 1) * card.power_per_level + (bonusPower || 0);
 }
+// عکس مخصوص همون سطح رو برمی‌گردونه، وگرنه عکس پایه کارت
+export function cardImageForLevel(card, level) {
+  if (card.level_images) {
+    try {
+      const map = JSON.parse(card.level_images);
+      if (map[level]) return map[level];
+    } catch (e) {}
+  }
+  return card.image_url;
+}
 
 // ---- inventory ----
 export function grantCard(tgId, cardId) {
   db.prepare('INSERT INTO user_cards (tg_id, card_id) VALUES (?,?)').run(tgId, cardId);
+}
+export function countUserCopiesOfCard(tgId, cardId) {
+  return db.prepare('SELECT COUNT(*) c FROM user_cards WHERE tg_id = ? AND card_id = ?').get(tgId, cardId).c;
 }
 export function getUserCards(tgId) {
   const rows = db.prepare(`
@@ -441,7 +482,11 @@ export function getUserCards(tgId) {
     FROM user_cards uc JOIN game_cards c ON c.id = uc.card_id
     WHERE uc.tg_id = ? ORDER BY uc.acquired_at DESC
   `).all(tgId);
-  return rows.map(r => ({ ...r, effective_power: effectivePower(r, r.level, r.bonus_power) }));
+  return rows.map(r => ({
+    ...r,
+    effective_power: effectivePower(r, r.level, r.bonus_power),
+    display_image: cardImageForLevel(r, r.level),
+  }));
 }
 export function upgradeUserCard(tgId, userCardId) {
   const row = db.prepare(`
@@ -472,20 +517,20 @@ export function upgradeUserCard(tgId, userCardId) {
   return { newLevel: row.level + 1, cost };
 }
 
-// ارتقا با قربانی کردن یک کارت دیگه — نصف قدرت موثر کارت قربانی‌شده به‌عنوان بونوس دائمی اضافه می‌شه
+// ارتقا با قربانی کردن یک کارت دیگه — درصد بونوس هر کارت از پنل قابل تنظیمه (پیش‌فرض ۵۰٪)
 export function sacrificeUpgradeCard(tgId, targetUserCardId, sacrificeUserCardId) {
   if (targetUserCardId === sacrificeUserCardId) throw new Error('نمی‌تونی یه کارت رو قربانی خودش کنی');
   const target = db.prepare(`
     SELECT uc.*, c.name, c.power_per_level FROM user_cards uc JOIN game_cards c ON c.id = uc.card_id WHERE uc.id = ?
   `).get(targetUserCardId);
   const sac = db.prepare(`
-    SELECT uc.*, c.power, c.power_per_level FROM user_cards uc JOIN game_cards c ON c.id = uc.card_id WHERE uc.id = ?
+    SELECT uc.*, c.power, c.power_per_level, c.sacrifice_bonus_percent FROM user_cards uc JOIN game_cards c ON c.id = uc.card_id WHERE uc.id = ?
   `).get(sacrificeUserCardId);
   if (!target || target.tg_id !== Number(tgId)) throw new Error('کارت هدف مال تو نیست');
   if (!sac || sac.tg_id !== Number(tgId)) throw new Error('کارت قربانی مال تو نیست');
 
   const sacPower = effectivePower(sac, sac.level, sac.bonus_power);
-  const boost = Math.floor(sacPower / 2);
+  const boost = Math.floor(sacPower * (sac.sacrifice_bonus_percent / 100));
 
   db.prepare('DELETE FROM user_cards WHERE id = ?').run(sacrificeUserCardId);
   db.prepare('UPDATE user_cards SET bonus_power = bonus_power + ? WHERE id = ?').run(boost, targetUserCardId);
@@ -495,6 +540,10 @@ export function sacrificeUpgradeCard(tgId, targetUserCardId, sacrificeUserCardId
 export function buyGameCard(tgId, cardId) {
   const card = getGameCard(cardId);
   if (!card || !card.active) throw new Error('کارت در دسترس نیست');
+  if (card.purchase_limit) {
+    const owned = countUserCopiesOfCard(tgId, cardId);
+    if (owned >= card.purchase_limit) throw new Error('این کارت فقط یک‌بار قابل خریده و قبلاً خریدیش');
+  }
   if (card.currency_code === 'RIAL') {
     const user = getUser(tgId);
     if (user.balance_rial < card.price) throw new Error('موجودی ریالی کافی نیست');
@@ -544,9 +593,12 @@ function resolveCardSnapshot(userCardIds) {
   return rows.map(r => ({ name: r.name, image_url: r.image_url, level: r.level, power: effectivePower(r, r.level, r.bonus_power) }));
 }
 
-export function joinQueue(tgId, userCardIds, minDeckSize) {
+export function joinQueue(tgId, userCardIds, minDeckSize, maxDeckSize) {
   if (!Array.isArray(userCardIds) || userCardIds.length < minDeckSize) {
     throw new Error(`حداقل ${minDeckSize} کارت باید انتخاب کنی`);
+  }
+  if (userCardIds.length > maxDeckSize) {
+    throw new Error(`حداکثر ${maxDeckSize} کارت می‌تونی انتخاب کنی`);
   }
   const owned = db.prepare(`SELECT id, card_id, level, bonus_power FROM user_cards WHERE tg_id = ? AND id IN (${userCardIds.map(() => '?').join(',')})`)
     .all(tgId, ...userCardIds);
@@ -563,10 +615,10 @@ export function joinQueue(tgId, userCardIds, minDeckSize) {
   const opponent = db.prepare(`SELECT * FROM game_queue WHERE status = 'waiting' AND tg_id != ? ORDER BY created_at ASC LIMIT 1`).get(tgId);
 
   if (opponent) {
-    // مچ فوری
-    const myPower = power + Math.floor(power * (Math.random() * 0.3 - 0.15)); // ±15% شانس
-    const oppPower = opponent.power + Math.floor(opponent.power * (Math.random() * 0.3 - 0.15));
-    const winnerTgId = myPower >= oppPower ? tgId : opponent.tg_id;
+    // مچ فوری — قدرت دقیقاً همون مجموع قدرت کارت‌های انتخابیه، بدون هیچ شانس یا رندومی
+    const myPower = power;
+    const oppPower = opponent.power;
+    const winnerTgId = myPower >= oppPower ? tgId : opponent.tg_id; // مساوی: نفری که دیرتر join کرده (تازه‌وارد) می‌بره
 
     const myCards = JSON.stringify(resolveCardSnapshot(userCardIds));
     const oppCards = JSON.stringify(resolveCardSnapshot(JSON.parse(opponent.card_ids)));
@@ -703,6 +755,23 @@ export function resetLeaderboard() {
 export function setLeaderboardResetInterval(days) {
   setSetting('lb_reset_interval_days', days);
 }
+
+// ---- تنظیمات کلی بازی (قابل مدیریت از پنل) ----
+export function getGameConfig() {
+  return {
+    minCardPower: Number(getSetting('min_card_power', 1)),
+    maxCardPower: Number(getSetting('max_card_power', 100)),
+    minDeckSize: Number(getSetting('min_deck_size', 1)),
+    maxDeckSize: Number(getSetting('max_deck_size', 5)),
+  };
+}
+export function setGameConfig(fields) {
+  if (fields.minCardPower !== undefined) setSetting('min_card_power', fields.minCardPower);
+  if (fields.maxCardPower !== undefined) setSetting('max_card_power', fields.maxCardPower);
+  if (fields.minDeckSize !== undefined) setSetting('min_deck_size', fields.minDeckSize);
+  if (fields.maxDeckSize !== undefined) setSetting('max_deck_size', fields.maxDeckSize);
+}
+
 export function listLeaderboardPrizes() {
   return db.prepare('SELECT * FROM leaderboard_prizes ORDER BY rank_from').all();
 }
@@ -718,9 +787,9 @@ export function deleteLeaderboardPrize(id) {
    پول خریدار موقع خرید بلوکه می‌شه (امانت)، فروشنده گیفت رو دستی تو تلگرام می‌فرسته،
    خریدار دریافتش رو تایید می‌کنه و تازه اونوقت پول (منهای کارمزد) آزاد می‌شه.
    ================================================================================== */
-export function createListing(sellerTgId, title, imageUrl, category, price) {
-  const info = db.prepare(`INSERT INTO gift_listings (seller_tg_id, title, image_url, category, price_rial) VALUES (?,?,?,?,?)`)
-    .run(sellerTgId, title, imageUrl || null, category || null, price);
+export function createListing(sellerTgId, title, imageUrl, category, price, currencyCode) {
+  const info = db.prepare(`INSERT INTO gift_listings (seller_tg_id, title, image_url, category, price_rial, currency_code) VALUES (?,?,?,?,?,?)`)
+    .run(sellerTgId, title, imageUrl || null, category || null, price, currencyCode || 'RIAL');
   return info.lastInsertRowid;
 }
 export function getListing(id) {
@@ -769,15 +838,23 @@ export function cancelListing(sellerTgId, id) {
   if (g.status !== 'listed') throw new Error('فقط آگهی‌های هنوز نفروخته قابل لغوه');
   db.prepare(`UPDATE gift_listings SET status = 'cancelled' WHERE id = ?`).run(id);
 }
+function creditCurrency(tgId, code, amount, reason, refId) {
+  if (code === 'RIAL') adjustBalance(tgId, 'rial', amount, reason, refId);
+  else adjustCurrencyBalance(tgId, code, amount);
+}
+function debitCheck(tgId, code, amount) {
+  if (code === 'RIAL') return getUser(tgId).balance_rial >= amount;
+  return getCurrencyBalance(tgId, code) >= amount;
+}
+
 export function reserveListing(buyerTgId, id) {
   const g = getListing(id);
   if (!g) throw new Error('آگهی پیدا نشد');
   if (g.status !== 'listed') throw new Error('این گیفت دیگه در دسترس نیست');
   if (g.seller_tg_id === Number(buyerTgId)) throw new Error('نمی‌تونی گیفت خودتو بخری');
-  const buyer = getUser(buyerTgId);
-  if (buyer.balance_rial < g.price_rial) throw new Error('موجودی کیف‌پول کافی نیست');
+  if (!debitCheck(buyerTgId, g.currency_code, g.price_rial)) throw new Error(`موجودی ${g.currency_code === 'RIAL' ? 'کیف‌پول' : g.currency_code} کافی نیست`);
 
-  adjustBalance(buyerTgId, 'rial', -g.price_rial, `پرداخت امانی برای گیفت «${g.title}»`, String(id));
+  creditCurrency(buyerTgId, g.currency_code, -g.price_rial, `پرداخت امانی برای گیفت «${g.title}»`, String(id));
   db.prepare(`UPDATE gift_listings SET status='reserved', buyer_tg_id=?, escrow_amount=?, reserved_at=datetime('now') WHERE id=?`)
     .run(buyerTgId, g.price_rial, id);
   return g;
@@ -790,7 +867,7 @@ export function confirmReceived(buyerTgId, id, feePercent) {
 
   const fee = Math.floor(g.escrow_amount * (feePercent / 100));
   const sellerReceives = g.escrow_amount - fee;
-  adjustBalance(g.seller_tg_id, 'rial', sellerReceives, `فروش گیفت «${g.title}» در بازار کاربران`, String(id));
+  creditCurrency(g.seller_tg_id, g.currency_code, sellerReceives, `فروش گیفت «${g.title}» در بازار کاربران`, String(id));
   db.prepare(`UPDATE gift_listings SET status='completed', completed_at=datetime('now') WHERE id=?`).run(id);
   return { ...g, sellerReceives };
 }
@@ -800,10 +877,10 @@ export function adminResolveListing(id, action, feePercent) {
   if (!g || g.status !== 'reserved') throw new Error('قابل رسیدگی نیست');
   if (action === 'release') {
     const fee = Math.floor(g.escrow_amount * (feePercent / 100));
-    adjustBalance(g.seller_tg_id, 'rial', g.escrow_amount - fee, `آزادسازی امانت توسط ادمین — گیفت «${g.title}»`, String(id));
+    creditCurrency(g.seller_tg_id, g.currency_code, g.escrow_amount - fee, `آزادسازی امانت توسط ادمین — گیفت «${g.title}»`, String(id));
     db.prepare(`UPDATE gift_listings SET status='completed', completed_at=datetime('now') WHERE id=?`).run(id);
   } else if (action === 'refund') {
-    adjustBalance(g.buyer_tg_id, 'rial', g.escrow_amount, `بازگشت وجه توسط ادمین — گیفت «${g.title}»`, String(id));
+    creditCurrency(g.buyer_tg_id, g.currency_code, g.escrow_amount, `بازگشت وجه توسط ادمین — گیفت «${g.title}»`, String(id));
     db.prepare(`UPDATE gift_listings SET status='cancelled' WHERE id=?`).run(id);
   } else throw new Error('عملیات نامعتبر');
   return g;
@@ -924,4 +1001,55 @@ export function updateCardTask(id, fields) {
 }
 export function deleteCardTask(id) {
   db.prepare('DELETE FROM card_tasks WHERE id = ?').run(id);
+}
+
+/* ===================== BAN / RESTRICT USERS ===================== */
+export function banUser(tgId, reason) {
+  db.prepare('UPDATE users SET banned = 1, ban_reason = ? WHERE tg_id = ?').run(reason || 'بدون دلیل مشخص', tgId);
+}
+export function unbanUser(tgId) {
+  db.prepare('UPDATE users SET banned = 0, ban_reason = NULL WHERE tg_id = ?').run(tgId);
+}
+export function isBanned(tgId) {
+  const u = db.prepare('SELECT banned, ban_reason FROM users WHERE tg_id = ?').get(tgId);
+  return u ? { banned: !!u.banned, reason: u.ban_reason } : { banned: false };
+}
+
+/* ===================== SUPPORT TICKETS ===================== */
+export function getOrCreateOpenTicket(tgId) {
+  let t = db.prepare(`SELECT * FROM support_tickets WHERE tg_id = ? AND status = 'open' ORDER BY created_at DESC LIMIT 1`).get(tgId);
+  if (!t) {
+    const info = db.prepare(`INSERT INTO support_tickets (tg_id) VALUES (?)`).run(tgId);
+    t = db.prepare('SELECT * FROM support_tickets WHERE id = ?').get(info.lastInsertRowid);
+  }
+  return t;
+}
+export function addSupportMessage(ticketId, sender, text, imageUrl) {
+  db.prepare(`INSERT INTO support_messages (ticket_id, sender, text, image_url) VALUES (?,?,?,?)`).run(ticketId, sender, text || null, imageUrl || null);
+  db.prepare(`UPDATE support_tickets SET updated_at = datetime('now') WHERE id = ?`).run(ticketId);
+}
+export function getTicketMessages(ticketId) {
+  return db.prepare('SELECT * FROM support_messages WHERE ticket_id = ? ORDER BY created_at ASC').all(ticketId);
+}
+export function getMyTickets(tgId) {
+  return db.prepare('SELECT * FROM support_tickets WHERE tg_id = ? ORDER BY created_at DESC').all(tgId);
+}
+export function getAllTicketsForAdmin() {
+  return db.prepare(`
+    SELECT t.*, u.username, u.first_name,
+      (SELECT text FROM support_messages m WHERE m.ticket_id = t.id ORDER BY m.created_at DESC LIMIT 1) AS last_message
+    FROM support_tickets t JOIN users u ON u.tg_id = t.tg_id
+    ORDER BY t.updated_at DESC
+  `).all();
+}
+export function getTicket(id) {
+  return db.prepare('SELECT * FROM support_tickets WHERE id = ?').get(id);
+}
+export function closeTicket(id) {
+  db.prepare(`UPDATE support_tickets SET status = 'closed' WHERE id = ?`).run(id);
+}
+
+/* ===================== BROADCAST ===================== */
+export function getAllUserIds() {
+  return db.prepare('SELECT tg_id FROM users').all().map(r => r.tg_id);
 }
