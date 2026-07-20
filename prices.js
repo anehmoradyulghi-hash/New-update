@@ -22,7 +22,7 @@ export async function getLivePrices() {
   if (now - cache.updatedAt < CACHE_MS && cache.usdt && cache.ton) {
     return { usdt: cache.usdt, ton: cache.ton, updatedAt: cache.updatedAt, live: false };
   }
-  const [usdt, ton] = await ([fetchNobitexPrice('usdt'), fetchNobitexPrice('ton')]);
+  const [usdt, ton] = await Promise.all([fetchNobitexPrice('usdt'), fetchNobitexPrice('ton')]);
   if (usdt) cache.usdt = usdt;
   if (ton) cache.ton = ton;
   cache.updatedAt = now;
